@@ -2,7 +2,6 @@
 https://github.com/google-deepmind/recurrentgemma/blob/main/recurrentgemma/torch/layers.py
 """
 
-
 import math
 
 import torch
