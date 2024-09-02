@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hawk-pytorch"
+authors = [{ name = "Benjamin Fattori", email = "fattoribenjamin@gmail.com" }]
+version = "1.0.0"
+description = "PyTorch implementation of Hawk"
+license = { file = "LICENSE" }
+dependencies = [
+    "torch==2.4.0",
+]
+requires-python = ">=3.10"
+
+[project.urls]
+Repository = "https://github.com/fattorib/hawk-pytorch"
+
+[tool.setuptools]
+packages = ["hawk"]
+
+[tool.setuptools.package-dir]
+hawk = "hawk"
+
+[project.optional-dependencies]
+dev = [
+    "black",
+    "isort",
+    "pyright",
+]
