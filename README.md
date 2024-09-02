@@ -1,6 +1,6 @@
 # Hawk - PyTorch 
 
-This is a PyTorch implementation of Hawk from [Griffin: Mixing Gated Linear Recurrences with Local Attention for Efficient Language Models](https://arxiv.org/abs/2402.19427). It uses a [custom Triton kernel](https://github.com/fattorib/fast_sequential_scan) for the sequential scan and supports `torch.compile``. Because of this, it is the fastest implementation of Hawk available for GPU. 
+This is a PyTorch implementation of Hawk from [Griffin: Mixing Gated Linear Recurrences with Local Attention for Efficient Language Models](https://arxiv.org/abs/2402.19427). It uses a [custom Triton kernel](https://github.com/fattorib/fast_sequential_scan) for the sequential scan and supports `torch.compile`. Because of this, it is the fastest implementation of Hawk available for GPU. 
 
 # Install
 
@@ -36,7 +36,7 @@ with torch.autocast(device_type = 'cuda', dtype=torch.bfloat16):
 loss.backward()
 ```
 
-# Citations / Acknowledgemtnts
+# Citations
 
 ```bibtex
 @misc{de2024griffinmixinggatedlinear,
@@ -50,4 +50,4 @@ loss.backward()
 }
 ```
 
-- Code in `hawk/external.py` taken from `google-deepmind/recurrentgemma`
+Code in `hawk/external.py` taken from `google-deepmind/recurrentgemma`
