@@ -1,4 +1,4 @@
-"""PyTorch Hawk model."""
+"""PyTorch minGRU model."""
 
 import math
 from dataclasses import dataclass
@@ -9,7 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .cache import RNNCache
-from .external import BlockDiagonalLinear, Conv1D, SqrtBoundDerivative, rnn_param_init
+from .external import Conv1D
 from .scan import linear_scan
 
 # ------
@@ -18,7 +18,7 @@ from .scan import linear_scan
 
 
 @dataclass
-class HawkConfig:
+class GRUConfig:
     vocab_size: int
     hidden_size: int
     intermediate_size: int
@@ -58,13 +58,13 @@ class RMSNorm(torch.nn.Module):
 
 
 class MLP(nn.Module):
-    def __init__(self, config: HawkConfig):
+    def __init__(self, config: GRUConfig):
         super().__init__()
         self.config = config
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.intermediate_size
-        self.gate_up_proj = nn.Linear(
-            config.hidden_size, 2 * config.intermediate_size, bias=False
+        self.fc_up_proj = nn.Linear(
+            config.hidden_size, config.intermediate_size, bias=False
         )
 
         self.resid_proj = nn.Linear(
@@ -74,42 +74,23 @@ class MLP(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self):
-        lecun_init(self.gate_up_proj.weight, self.hidden_size)
+        lecun_init(self.fc_up_proj.weight, self.hidden_size)
         lecun_init(self.resid_proj.weight, self.intermediate_size)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.gate_up_proj(x)
-
-        gate, up = torch.chunk(x, chunks=2, dim=-1)
-
-        return self.resid_proj(F.gelu(gate) * up)
+        x = self.fc_up_proj(x)
+        x = F.gelu(x)
+        return self.resid_proj(x)
 
 
-class Hawk(nn.Module):
-    def __init__(self, config: HawkConfig, use_cache: bool = False):
+class GRUBlock(nn.Module):
+    def __init__(self, config: GRUConfig, use_cache: bool = False):
         super().__init__()
 
         self.config = config
 
-        self.input_xy = nn.Linear(
+        self.input_zh = nn.Linear(
             config.hidden_size, 2 * config.recurrent_size, bias=False
-        )
-
-        if config.post_norm:
-            self.norm = RMSNorm(config.recurrent_size)
-        else:
-            self.norm = nn.Identity()
-
-        self.rg_lru_input_gate = BlockDiagonalLinear(
-            width=config.recurrent_size, num_blocks=self.config.num_blocks
-        )
-
-        self.rg_lru_a_gate = BlockDiagonalLinear(
-            width=config.recurrent_size, num_blocks=self.config.num_blocks
-        )
-
-        self.rg_lru_a_param = nn.Parameter(
-            torch.empty([config.recurrent_size], dtype=torch.float32)
         )
 
         self.resid_proj = nn.Linear(
@@ -127,34 +108,8 @@ class Hawk(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
-        self.forget_init(self.rg_lru_a_param)
-
-        lecun_init(self.input_xy.weight, self.config.hidden_size)
+        lecun_init(self.input_zh.weight, self.config.hidden_size)
         lecun_init(self.resid_proj.weight, self.config.recurrent_size)
-
-    def forget_init(self, w: torch.Tensor) -> torch.Tensor:
-        """Initializes the `A` parameter of the RG-LRU."""
-        return rnn_param_init(w, min_rad=0.9, max_rad=0.999)
-
-    def epilogue(self, gate, h):
-        return self.resid_proj(F.gelu(gate) * self.norm(h))
-
-    def prologue(self, x):
-        gate_x = torch.sigmoid(self.rg_lru_input_gate(x))
-        gate_a = torch.sigmoid(self.rg_lru_a_gate(x))
-
-        log_a = -8.0 * gate_a * nn.functional.softplus(self.rg_lru_a_param.float())
-        a = torch.exp(log_a.float())
-        a_square = torch.exp(2 * log_a.float())
-        gated_x = x * gate_x
-
-        multiplier = SqrtBoundDerivative.apply(1 - a_square)
-
-        assert multiplier is not None
-
-        normalized_x = gated_x * multiplier.to(x.dtype)
-
-        return a, normalized_x
 
     def forward(
         self,
@@ -167,10 +122,6 @@ class Hawk(nn.Module):
             and self.use_cache
         )
 
-        xy = self.input_xy(x)
-
-        x, y = torch.chunk(xy, chunks=2, dim=-1)
-
         if has_layer_past:
             x = torch.concat([layer_past.conv_state, x], dim=1)
             layer_past.update_conv_cache(x[:, -1:, ...])
@@ -179,39 +130,43 @@ class Hawk(nn.Module):
             if self.use_cache:
                 layer_past.conv_state = x[:, -3:, ...]
 
-        x = self.conv1d(x=x)
+        x = x + self.conv1d(x=x)
 
         if has_layer_past:
             x = x[:, -1:, ...]
 
-        a, normalized_x = self.prologue(x)
+        zh = self.input_zh(x)
+
+        z, h = torch.chunk(zh, chunks=2, dim=-1)
+
+        z = z.sigmoid()
 
         cache = None
         if not has_layer_past:
-            h = linear_scan(a, normalized_x)
+            h_o = linear_scan((1 - z), (z * h))
 
             if self.use_cache:
-                assert h is not None
-                layer_past.update_cache(h[:, -1:, :])
+                assert h_o is not None
+                layer_past.update_cache(h_o[:, -1:, :])
                 cache = layer_past
 
         else:
-            h = (a * layer_past.recc_state) + normalized_x
+            h_o = ((1 - z) * layer_past.recc_state) + (z * h)
 
-            layer_past.update_cache(h[:, -1:, :])
+            layer_past.update_cache(h_o[:, -1:, :])
             cache = layer_past
 
-        output = self.epilogue(y, h)
+        output = self.resid_proj(h_o)
 
         return output, cache
 
 
 class RNNLayer(nn.Module):
-    def __init__(self, config: HawkConfig, use_cache: bool = False):
+    def __init__(self, config: GRUConfig, use_cache: bool = False):
         super().__init__()
         self.use_cache = use_cache
 
-        self.recc = Hawk(config, use_cache)
+        self.recc = GRUBlock(config, use_cache)
 
         self.mlp = MLP(config)
 
@@ -239,8 +194,8 @@ class RNNLayer(nn.Module):
         return hidden_states, rnn_cache
 
 
-class HawkModel(nn.Module):
-    def __init__(self, config: HawkConfig, use_cache=False):
+class GRUModel(nn.Module):
+    def __init__(self, config: GRUConfig, use_cache=False):
         super().__init__()
         self.config = config
         self.use_cache: bool = use_cache
