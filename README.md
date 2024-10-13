@@ -1,6 +1,6 @@
-# Hawk - PyTorch 
+# minGRU - PyTorch 
 
-This is a PyTorch implementation of Hawk from [Griffin: Mixing Gated Linear Recurrences with Local Attention for Efficient Language Models](https://arxiv.org/abs/2402.19427). It uses a [custom Triton kernel](https://github.com/fattorib/fast_sequential_scan) for the sequential scan and supports `torch.compile`. Because of this, it is the fastest implementation of Hawk available for GPU. 
+This is a PyTorch implementation of minGRU from [Were RNNs All We Needed?](https://arxiv.org/abs/2410.01201). It uses a [custom Triton kernel](https://github.com/fattorib/fast_sequential_scan) for the sequential scan and supports `torch.compile`. Because of this, it is the fastest implementation of Hawk available for GPU. 
 
 # Install
 
@@ -14,18 +14,15 @@ pip install -e .
 
 ```python
 import torch 
-from hawk import HawkModel, HawkConfig
+from minGRU import GRUConfig, GRUModel
 
-config = HawkConfig(vocab_size=32000, 
+config = GRUConfig(vocab_size=32000, 
                     hidden_size=512, 
-                    intermediate_size=1024, 
+                    intermediate_size=2048, 
                     recurrent_size=512, 
-                    num_hidden_layers=8, 
-                    num_blocks = 16,
-                    post_norm=False)
+                    num_hidden_layers=8)
 
-
-model = HawkModel(config, use_cache=False)
+model = GRUModel(config, use_cache=False)
 
 model.to('cuda')
 model = torch.compile(model) # this works!
@@ -37,6 +34,18 @@ loss.backward()
 ```
 
 # Citations
+
+```bibtex
+@misc{feng2024rnnsneeded,
+      title={Were RNNs All We Needed?}, 
+      author={Leo Feng and Frederick Tung and Mohamed Osama Ahmed and Yoshua Bengio and Hossein Hajimirsadegh},
+      year={2024},
+      eprint={2410.01201},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2410.01201}, 
+}
+```
 
 ```bibtex
 @misc{de2024griffinmixinggatedlinear,
