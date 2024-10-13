@@ -24,8 +24,6 @@ class GRUConfig:
     intermediate_size: int
     num_hidden_layers: int
     recurrent_size: int
-    num_blocks: int
-    post_norm: bool = False
 
 
 # ------
