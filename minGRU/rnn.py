@@ -128,7 +128,7 @@ class GRUBlock(nn.Module):
             if self.use_cache:
                 layer_past.conv_state = x[:, -3:, ...]
 
-        x = x + self.conv1d(x=x)
+        x = F.silu(self.conv1d(x=x))
 
         if has_layer_past:
             x = x[:, -1:, ...]
