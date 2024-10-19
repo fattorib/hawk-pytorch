@@ -63,26 +63,35 @@ class MLP(nn.Module):
         self.config = config
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.intermediate_size
-        self.gate_up_proj = nn.Linear(
-            config.hidden_size, 2 * config.intermediate_size, bias=False
+        self.up_proj = nn.Linear(
+            config.hidden_size, config.intermediate_size, bias=False
         )
 
-        self.resid_proj = nn.Linear(
+        self.down_proj = nn.Linear(
             config.intermediate_size, config.hidden_size, bias=False
+        )
+
+        self.gate_proj = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
+
+        self.temporal_width = 4
+        self.conv_y = Conv1D(width=self.hidden_size, temporal_width=self.temporal_width)
+        self.conv_gate = Conv1D(
+            width=self.hidden_size, temporal_width=self.temporal_width
         )
 
         self.reset_parameters()
 
     def reset_parameters(self):
-        lecun_init(self.gate_up_proj.weight, self.hidden_size)
-        lecun_init(self.resid_proj.weight, self.intermediate_size)
+        lecun_init(self.up_proj.weight, self.hidden_size)
+        lecun_init(self.down_proj.weight, self.intermediate_size)
+        lecun_init(self.gate_proj.weight, self.hidden_size)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.gate_up_proj(x)
 
-        gate, up = torch.chunk(x, chunks=2, dim=-1)
+        y = self.down_proj(F.relu(self.up_proj(self.conv_y(x))) ** 2.0)
+        gate = F.sigmoid(self.gate_proj(self.conv_gate(x)))
 
-        return self.resid_proj(F.gelu(gate) * up)
+        return gate * y
 
 
 class Hawk(nn.Module):
@@ -94,11 +103,6 @@ class Hawk(nn.Module):
         self.input_xy = nn.Linear(
             config.hidden_size, 2 * config.recurrent_size, bias=False
         )
-
-        if config.post_norm:
-            self.norm = RMSNorm(config.recurrent_size)
-        else:
-            self.norm = nn.Identity()
 
         self.rg_lru_input_gate = BlockDiagonalLinear(
             width=config.recurrent_size, num_blocks=self.config.num_blocks
@@ -119,7 +123,16 @@ class Hawk(nn.Module):
         self.use_cache = use_cache
 
         self.temporal_width = 4
-        self.conv1d = Conv1D(
+
+        self.conv_gate = Conv1D(
+            width=config.recurrent_size,
+            temporal_width=self.temporal_width,
+        )
+        self.conv_gate_input = Conv1D(
+            width=config.recurrent_size,
+            temporal_width=self.temporal_width,
+        )
+        self.conv_gate_a = Conv1D(
             width=config.recurrent_size,
             temporal_width=self.temporal_width,
         )
@@ -137,11 +150,12 @@ class Hawk(nn.Module):
         return rnn_param_init(w, min_rad=0.9, max_rad=0.999)
 
     def epilogue(self, gate, h):
-        return self.resid_proj(F.gelu(gate) * self.norm(h))
+        return self.resid_proj(F.sigmoid(self.conv_gate(gate)) * h)
 
     def prologue(self, x):
-        gate_x = torch.sigmoid(self.rg_lru_input_gate(x))
-        gate_a = torch.sigmoid(self.rg_lru_a_gate(x))
+
+        gate_x = torch.sigmoid(self.rg_lru_input_gate(self.conv_gate_input(x)))
+        gate_a = torch.sigmoid(self.rg_lru_a_gate(self.conv_gate_input(x)))
 
         log_a = -8.0 * gate_a * nn.functional.softplus(self.rg_lru_a_param.float())
         a = torch.exp(log_a.float())
@@ -178,9 +192,6 @@ class Hawk(nn.Module):
         else:
             if self.use_cache:
                 layer_past.conv_state = x[:, -3:, ...]
-
-        x = self.conv1d(x=x)
-
         if has_layer_past:
             x = x[:, -1:, ...]
 

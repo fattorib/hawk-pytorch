@@ -43,7 +43,12 @@ class Conv1D(nn.Module):
         self.b = nn.Parameter(torch.empty([width], dtype=torch.float32))
 
         std = math.sqrt(self.w_init_variance_scale / self.temporal_width)
-        torch.nn.init.normal_(self.w, mean=0.0, std=std)
+
+        # identity init
+        with torch.no_grad():
+            torch.nn.init.zeros_(self.w)
+            self.w[-1, ...] = 1.0
+
         torch.nn.init.zeros_(self.b)
 
     def doc_mask_forward(self, x):
