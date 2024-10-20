@@ -108,10 +108,6 @@ class Hawk(nn.Module):
             width=config.recurrent_size, num_blocks=self.config.num_blocks
         )
 
-        self.rg_lru_a_gate = BlockDiagonalLinear(
-            width=config.recurrent_size, num_blocks=self.config.num_blocks
-        )
-
         self.rg_lru_a_param = nn.Parameter(
             torch.empty([config.recurrent_size], dtype=torch.float32)
         )
@@ -155,18 +151,15 @@ class Hawk(nn.Module):
     def prologue(self, x):
 
         gate_x = torch.sigmoid(self.rg_lru_input_gate(self.conv_gate_input(x)))
-        gate_a = torch.sigmoid(self.rg_lru_a_gate(self.conv_gate_input(x)))
 
-        log_a = -8.0 * gate_a * nn.functional.softplus(self.rg_lru_a_param.float())
+        # recurrence is: (h_{t+1} = a*h_{t} + x*gate_x) so gating on recurrence is time independent
+
+        log_a = -8.0 * nn.functional.softplus(self.rg_lru_a_param.float())
         a = torch.exp(log_a.float())
-        a_square = torch.exp(2 * log_a.float())
+
         gated_x = x * gate_x
 
-        multiplier = SqrtBoundDerivative.apply(1 - a_square)
-
-        assert multiplier is not None
-
-        normalized_x = gated_x * multiplier.to(x.dtype)
+        normalized_x = gated_x
 
         return a, normalized_x
 
