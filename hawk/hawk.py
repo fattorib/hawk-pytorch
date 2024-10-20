@@ -155,7 +155,7 @@ class Hawk(nn.Module):
     def prologue(self, x):
 
         gate_x = torch.sigmoid(self.rg_lru_input_gate(self.conv_gate_input(x)))
-        gate_a = torch.sigmoid(self.rg_lru_a_gate(self.conv_gate_input(x)))
+        gate_a = torch.sigmoid(self.rg_lru_a_gate(self.conv_gate_a(x)))
 
         log_a = -8.0 * gate_a * nn.functional.softplus(self.rg_lru_a_param.float())
         a = torch.exp(log_a.float())
