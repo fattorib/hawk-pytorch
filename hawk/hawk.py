@@ -112,9 +112,9 @@ class Hawk(nn.Module):
             width=config.recurrent_size, num_blocks=self.config.num_blocks
         )
 
-        # self.rg_lru_a_param = nn.Parameter(
-        #     torch.empty([config.recurrent_size], dtype=torch.float32)
-        # )
+        self.rg_lru_a_param = nn.Parameter(
+            torch.empty([config.recurrent_size], dtype=torch.float32)
+        )
 
         self.resid_proj = nn.Linear(
             config.recurrent_size, config.hidden_size, bias=False
@@ -140,6 +140,7 @@ class Hawk(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
+        self.forget_init(self.rg_lru_a_param)
 
         lecun_init(self.input_xy.weight, self.config.hidden_size)
         lecun_init(self.resid_proj.weight, self.config.recurrent_size)
@@ -148,36 +149,26 @@ class Hawk(nn.Module):
         """Initializes the `A` parameter of the RG-LRU."""
         return rnn_param_init(w, min_rad=0.9, max_rad=0.999)
 
-    def rwkv_init(self, index):
-        with torch.no_grad():
-            w = torch.empty([self.config.recurrent_size], dtype=torch.float32)
-            ratio_0_to_1 = index / (self.config.num_hidden_layers - 1)
-
-            for h in range(self.config.recurrent_size):
-                w[h] = -5 + 8 * (h / (self.config.recurrent_size - 1)) ** (
-                    0.7 + 1.3 * ratio_0_to_1
-                )
-
-        self.rg_lru_a_param = nn.Parameter(w)
-
     def epilogue(self, gate, h):
         return self.resid_proj(F.sigmoid(self.conv_gate(gate)) * h)
 
     def prologue(self, x):
 
-        gate_k = self.rg_lru_input_gate(self.conv_gate_input(x))
-        gate_v = self.rg_lru_a_gate(self.conv_gate_input(x))
+        gate_x = torch.sigmoid(self.rg_lru_input_gate(self.conv_gate_input(x)))
+        gate_a = torch.sigmoid(self.rg_lru_a_gate(self.conv_gate_input(x)))
 
-        w = torch.exp(-1.0 * self.rg_lru_a_param)
-        w = torch.broadcast_to(w, x.shape)
+        log_a = -8.0 * gate_a * nn.functional.softplus(self.rg_lru_a_param.float())
+        a = torch.exp(log_a.float())
+        a_square = torch.exp(2 * log_a.float())
+        gated_x = x * gate_x
 
-        # numerator
-        a_i_num, b_i_num = w, torch.exp(gate_k) * gate_v
+        multiplier = SqrtBoundDerivative.apply(1 - a_square)
 
-        # denom
-        a_i_denom, b_i_denom = w, torch.exp(gate_k)
+        assert multiplier is not None
 
-        return a_i_num, b_i_num, a_i_denom, b_i_denom
+        normalized_x = gated_x * multiplier.to(x.dtype)
+
+        return a, normalized_x
 
     def forward(
         self,
@@ -204,14 +195,11 @@ class Hawk(nn.Module):
         if has_layer_past:
             x = x[:, -1:, ...]
 
-        a_i_num, b_i_num, a_i_denom, b_i_denom = self.prologue(x)
+        a, normalized_x = self.prologue(x)
 
         cache = None
         if not has_layer_past:
-            num = linear_scan(a_i_num, b_i_num)
-            denom = linear_scan(a_i_num, a_i_denom)
-
-            h = num / denom
+            h = linear_scan(a, normalized_x)
 
             if self.use_cache:
                 assert h is not None
@@ -280,10 +268,6 @@ class HawkModel(nn.Module):
         self.reset_parameters()
 
         self.lm_head.weight = self.embed_tokens.weight
-
-        with torch.no_grad():
-            for i, layer in enumerate(self.layers):
-                layer.recc.rwkv_init(i)
 
     def reset_parameters(self):
         lecun_init(self.embed_tokens.weight, self.config.hidden_size)
