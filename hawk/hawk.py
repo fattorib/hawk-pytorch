@@ -157,6 +157,8 @@ class Hawk(nn.Module):
         log_a = -8.0 * nn.functional.softplus(self.rg_lru_a_param.float())
         a = torch.exp(log_a.float())
 
+        a = torch.broadcast_to(a, x.shape) # broadcast to (B,L,D)
+
         gated_x = x * gate_x
 
         normalized_x = gated_x
