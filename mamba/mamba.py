@@ -68,7 +68,7 @@ class Mamba(nn.Module):
         # init for dt
         dt_init_std = self.config.dt_rank**-0.5 * 1.0
         nn.init.uniform_(self.dt_proj.weight, -dt_init_std, dt_init_std)
-        self.dt_proj._no_reinit = True
+        self.dt_proj.weight._no_reinit = True # type: ignore
 
         dt = torch.exp(
             torch.rand(self.config.intermediate_size)
@@ -81,7 +81,7 @@ class Mamba(nn.Module):
         with torch.no_grad():
             self.dt_proj.bias.copy_(inv_dt)
         # Our initialization would set all Linear.bias to zero, need to mark this one as _no_reinit
-        self.dt_proj.bias._no_reinit = True
+        self.dt_proj.bias._no_reinit = True # type: ignore
 
         A = repeat(
             torch.arange(1, self.config.state_size + 1),
@@ -216,12 +216,21 @@ class MambaModel(nn.Module):
 
         self.apply(self._init_weights)
 
+        for name, p in self.named_parameters():
+            if name in ["resid_proj.weight"]:
+                torch.nn.init.normal_(
+                    p, mean=0.0, std=0.02 / math.sqrt(2 * config.num_hidden_layers)
+                )
+
     def _init_weights(self, module: nn.Module):
         """Initialize the weights"""
         if isinstance(module, nn.Linear):
             if module.bias is not None:
                 if not getattr(module.bias, "_no_reinit", False):
                     nn.init.zeros_(module.bias)
+            else:
+                nn.init.normal_(module.weight, std=0.02)
+
         elif isinstance(module, nn.Embedding):
             nn.init.normal_(module.weight, std=0.02)
 
