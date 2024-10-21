@@ -13,25 +13,26 @@ pip install -e .
 # Usage
 
 ```python
-import torch 
-from hawk import HawkModel, HawkConfig
+import torch
+from mamba import MambaConfig, MambaModel
 
-config = HawkConfig(vocab_size=32000, 
-                    hidden_size=512, 
-                    intermediate_size=1024, 
-                    recurrent_size=512, 
-                    num_hidden_layers=8, 
-                    num_blocks = 16,
-                    post_norm=False)
+config = MambaConfig(
+    vocab_size=32000,
+    hidden_size=512,
+    intermediate_size=1024,
+    state_size=16,
+    num_hidden_layers=8,
+    dt_rank=512 // 16,
+)
 
 
-model = HawkModel(config, use_cache=False)
+model = MambaModel(config, use_cache=False)
 
-model.to('cuda')
-model = torch.compile(model) # this works!
+model.to("cuda")
+model = torch.compile(model)  # this works!
 
 x = torch.randint(size=(1, 2048), low=1, high=32000, device="cuda:0")
-with torch.autocast(device_type = 'cuda', dtype=torch.bfloat16):
+with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
     loss = model(x, x)
 loss.backward()
 ```

@@ -3,10 +3,10 @@ requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "hawk-pytorch"
+name = "mamba-pytorch"
 authors = [{ name = "Benjamin Fattori", email = "fattoribenjamin@gmail.com" }]
 version = "1.0.0"
-description = "PyTorch implementation of Hawk"
+description = "PyTorch implementation of Mamba"
 license = { file = "LICENSE" }
 dependencies = [
     "torch==2.4.0",
@@ -18,10 +18,10 @@ requires-python = ">=3.10"
 Repository = "https://github.com/fattorib/hawk-pytorch"
 
 [tool.setuptools]
-packages = ["hawk"]
+packages = ["mamba"]
 
 [tool.setuptools.package-dir]
-hawk = "hawk"
+hawk = "mamba"
 
 [project.optional-dependencies]
 dev = [
