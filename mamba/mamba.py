@@ -68,7 +68,7 @@ class Mamba(nn.Module):
         # init for dt
         dt_init_std = self.config.dt_rank**-0.5 * 1.0
         nn.init.uniform_(self.dt_proj.weight, -dt_init_std, dt_init_std)
-        self.dt_proj.weight._no_reinit = True # type: ignore
+        self.dt_proj.weight._no_reinit = True  # type: ignore
 
         dt = torch.exp(
             torch.rand(self.config.intermediate_size)
@@ -81,7 +81,7 @@ class Mamba(nn.Module):
         with torch.no_grad():
             self.dt_proj.bias.copy_(inv_dt)
         # Our initialization would set all Linear.bias to zero, need to mark this one as _no_reinit
-        self.dt_proj.bias._no_reinit = True # type: ignore
+        self.dt_proj.bias._no_reinit = True  # type: ignore
 
         A = repeat(
             torch.arange(1, self.config.state_size + 1),
@@ -112,7 +112,7 @@ class Mamba(nn.Module):
 
     def _ssm(self, x):
 
-        (d_in, n) = self.A_log.shape
+        n = self.A_log.shape[1]
         b, l, d = x.shape
 
         A = -torch.exp(self.A_log.float())  # shape (d_in, n)
@@ -127,6 +127,7 @@ class Mamba(nn.Module):
         deltaA = torch.exp(einsum(delta, A, "b l d_in, d_in n -> b l d_in n"))
         deltaB_u = einsum(delta, B, x, "b l d_in, b l n, b l d_in -> b l d_in n")
 
+        # need to rearrange so this works with linear scan
         deltaA = deltaA.reshape(b, l, -1)
         deltaB_u = deltaB_u.reshape(b, l, -1)
 
