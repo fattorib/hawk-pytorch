@@ -62,8 +62,26 @@ class Mamba(nn.Module):
             bias=False,
         )
         self.dt_proj = nn.Linear(
-            self.config.dt_rank, self.config.intermediate_size, bias=False
+            self.config.dt_rank, self.config.intermediate_size, bias=True
         )
+
+        # init for dt
+        dt_init_std = self.config.dt_rank**-0.5 * 1.0
+        nn.init.uniform_(self.dt_proj.weight, -dt_init_std, dt_init_std)
+        self.dt_proj._no_reinit = True
+
+        dt = torch.exp(
+            torch.rand(self.config.intermediate_size)
+            * (math.log(0.1) - math.log(0.001))
+            + math.log(0.001)
+        ).clamp(min=1e-4)
+
+        # Inverse of softplus: https://github.com/pytorch/pytorch/issues/72759
+        inv_dt = dt + torch.log(-torch.expm1(-dt))
+        with torch.no_grad():
+            self.dt_proj.bias.copy_(inv_dt)
+        # Our initialization would set all Linear.bias to zero, need to mark this one as _no_reinit
+        self.dt_proj.bias._no_reinit = True
 
         A = repeat(
             torch.arange(1, self.config.state_size + 1),
@@ -201,11 +219,11 @@ class MambaModel(nn.Module):
     def _init_weights(self, module: nn.Module):
         """Initialize the weights"""
         if isinstance(module, nn.Linear):
-            module.weight.data.normal_(mean=0.0, std=0.02)
             if module.bias is not None:
-                module.bias.data.zero_()
+                if not getattr(module.bias, "_no_reinit", False):
+                    nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
-            module.weight.data.normal_(mean=0.0, std=0.02)
+            nn.init.normal_(module.weight, std=0.02)
 
     def forward(
         self,
