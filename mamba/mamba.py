@@ -94,7 +94,7 @@ class Mamba(nn.Module):
         b, l, d = x.shape
 
         A = -torch.exp(self.A_log.float())  # shape (d_in, n)
-        D = D.float()
+        D = self.D.float()
 
         x_dbl = self.x_proj(x)
 
@@ -102,10 +102,13 @@ class Mamba(nn.Module):
 
         delta = torch.nn.functional.softplus(self.dt_proj(delta))
 
-        deltaA = torch.exp(einsum(delta, A, "b l d_in, d_in n -> b l (d_in n)"))
-        deltaB_u = einsum(delta, B, x, "b l d_in, b l n, b l d_in -> b l (d_in n)")
+        deltaA = torch.exp(einsum(delta, A, "b l d_in, d_in n -> b l d_in n"))
+        deltaB_u = einsum(delta, B, x, "b l d_in, b l n, b l d_in -> b l d_in n")
 
-        scan_out = linear_scan(delta, deltaB_u)
+        deltaA = deltaA.reshape(b, l, -1)
+        deltaB_u = deltaB_u.reshape(b, l, -1)
+
+        scan_out = linear_scan(deltaA, deltaB_u)
 
         scan_out = rearrange(scan_out, "b l (d n) -> b l d n", d=d, n=n)
 
