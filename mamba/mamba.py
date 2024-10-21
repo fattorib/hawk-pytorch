@@ -83,9 +83,13 @@ class Mamba(nn.Module):
         self.use_cache = use_cache
 
         self.temporal_width = 4
-        self.conv1d = Conv1D(
-            width=self.config.intermediate_size,
-            temporal_width=self.temporal_width,
+        self.conv1d = nn.Conv1d(
+            in_channels=self.config.intermediate_size,
+            out_channels=self.config.intermediate_size,
+            bias=True,
+            kernel_size=self.temporal_width,
+            groups=self.config.intermediate_size,
+            padding=self.temporal_width - 1,
         )
 
     def _ssm(self, x):
@@ -135,7 +139,11 @@ class Mamba(nn.Module):
 
         (x, res) = torch.chunk(x_and_res, chunks=2, dim=-1)
 
-        x = F.silu(self.conv1d(x=x))
+        (b, l, d) = x.shape
+
+        x = rearrange(x, "b l d_in -> b d_in l")
+        x = F.silu(self.conv1d(x)[:, :, :l])
+        x = rearrange(x, "b d_in l -> b l d_in")
 
         y = self._ssm(x)
 

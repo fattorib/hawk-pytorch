@@ -52,3 +52,5 @@ loss.backward()
 ```
 
 Code in `hawk/external.py` taken from `google-deepmind/recurrentgemma`
+
+The majority of the SSM formulation (all code within `_ssm(...)`) was modified from the excellent [simple-mamba](https://github.com/johnma2006/mamba-minimal) 
