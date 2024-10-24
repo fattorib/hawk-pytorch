@@ -108,17 +108,11 @@ class Mamba(nn.Module):
             padding=self.temporal_width - 1,
         )
 
-        if self.config.state_size * self.config.intermediate_size > 8192:
-            from .scan_2 import linear_scan as cw_linear_scan
+        from .scan_fused import linear_scan
 
-            self.scan_fn = cw_linear_scan
-        else:
-            from .scan import linear_scan
-
-            self.scan_fn = linear_scan
+        self.scan_fn = linear_scan
 
     def _ssm(self, x):
-
         n = self.A_log.shape[1]
         b, l, d = x.shape
 
@@ -131,23 +125,12 @@ class Mamba(nn.Module):
 
         delta = torch.nn.functional.softplus(self.dt_proj(delta))
 
-        # these are pretty free to fuse into fwd pass
-        deltaA = torch.exp(
-            einsum(delta, A, "b l d_in, d_in n -> b l d_in n")
-        )  # delta[...,None]*A[None,None,...]
-        deltaB_u = einsum(delta, B, x, "b l d_in, b l n, b l d_in -> b l d_in n")
-
-        # need to rearrange so this works with linear scan
-        deltaA = deltaA.reshape(b, l, -1)
-        deltaB_u = deltaB_u.reshape(b, l, -1)
-
-        scan_out = self.scan_fn(deltaA, deltaB_u)
+        # TODO: Fuse the remainder of these too
+        scan_out = self.scan_fn(A, delta, B, x)
 
         scan_out = rearrange(scan_out, "b l (d n) -> b l d n", d=d, n=n)
 
-        y = einsum(
-            scan_out, C, "b l d_in n, b l n -> b l d_in"
-        )  # sum(scan_out * C[:,:, None,:], dim = -1)
+        y = einsum(scan_out, C, "b l d_in n, b l n -> b l d_in")
 
         y = y + x * D
 
