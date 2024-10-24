@@ -6,6 +6,16 @@ import triton.language as tl
 from torch.autograd import Function
 
 
+@triton.jit
+def softplus_fwd(x):
+    return tl.log(1 + tl.exp(x))
+
+
+@triton.jit
+def softplus_bwd(x):
+    return tl.exp(x) / (1 + tl.exp(x))
+
+
 # fmt: off
 @triton.jit
 def sequential_scan_fwd_kernel(
@@ -40,6 +50,9 @@ def sequential_scan_fwd_kernel(
     
 
     delta_i = tl.load(delta_ptr + offs_ld_d,mask = offs_ld_d < numel_ld_d).to(tl.float32)[None,:] # [1, D]
+    
+    delta_i = softplus_fwd(delta_i)
+
     x_i = tl.load(x_ptr + offs_ld_d,mask = offs_ld_d < numel_ld_d ).to(tl.float32)[None,:] # [1, D]
     B_i = tl.load(B_ptr + offs_ld_n,mask = offs_ld_n < numel_ld_n ).to(tl.float32)[None,:] # [1, N]
 
@@ -62,6 +75,9 @@ def sequential_scan_fwd_kernel(
         hidden_ptr += o_l_stride
 
         delta_i = tl.load(delta_ptr + offs_ld_d,mask = offs_ld_d < numel_ld_d).to(tl.float32)[None,:] # [1, D]
+        
+        delta_i = softplus_fwd(delta_i)
+        
         x_i = tl.load(x_ptr + offs_ld_d,mask = offs_ld_d < numel_ld_d ).to(tl.float32)[None,:] # [1, D]
         B_i = tl.load(B_ptr + offs_ld_n,mask = offs_ld_n < numel_ld_n ).to(tl.float32)[None,:] # [1, N]
 
@@ -149,18 +165,13 @@ def sequential_scan_bwd_kernel(
     
 
     # offset ptrs to correct batch start 
-
     A_block_ptr = tl.make_block_ptr(A_ptr, 
                                     shape = (BLOCKSIZE_D, BLOCKSIZE_N), 
                                     block_shape= (BLOCKSIZE_D, BLOCKSIZE_N), 
                                     offsets=(0,0), 
                                     strides = (A_r_stride, A_c_stride), order = (1,0))
     
-    A_grad_block_ptr = tl.make_block_ptr(dA_ptr + (bs_pid * dA_bs_stride), 
-                                    shape = (BLOCKSIZE_D, BLOCKSIZE_N), 
-                                    block_shape= (BLOCKSIZE_D, BLOCKSIZE_N), 
-                                    offsets=(0,0), 
-                                    strides = (dA_row_stride, 1), order = (1,0))
+   
     
     A = tl.load(A_block_ptr) # [BLOCKSIZE_D, BLOCKSIZE_N]
 
@@ -192,13 +203,20 @@ def sequential_scan_bwd_kernel(
     x = tl.load(x_ptr + offs_d, mask = mask_d).to(tl.float32) # [D]
 
     delta = tl.load(delta_ptr + offs_d, mask = mask_d).to(tl.float32) # [D]
+
+    delta_bwd_act = softplus_bwd(delta)
+    delta = softplus_fwd(delta)
+
+
     intermediate = (h_grad * h_rec).reshape(BLOCKSIZE_D, BLOCKSIZE_N) * tl.exp(delta[:,None] * A) # [D,N] * ([D,1] * [D,N])
 
     delta_grad = tl.sum(intermediate * A, axis = -1) # [D,]
 
     # [D,N] * ([1, N] * [D, 1] -> [D,N])
     delta_grad += tl.sum(h_grad.reshape(BLOCKSIZE_D, BLOCKSIZE_N) * (B[None,:] * x[:,None]), axis = -1)
-
+    
+    delta_grad = delta_grad*delta_bwd_act
+    
     # store delta grad -> this is correct!
     tl.store(ddelta_ptr + offs_d, mask = mask_d, value=delta_grad.to(tl.bfloat16))
     
@@ -214,8 +232,6 @@ def sequential_scan_bwd_kernel(
     A_grad += intermediate * delta[:,None]
     
     for _ in range(2, num_context):
-
-        # delta = tl.load(delta_ptr + offs_d, mask = mask_d).to(tl.float32) # [D]
 
         # reduce pointer offsets
         o_ptr -= o_sq_stride
@@ -235,11 +251,19 @@ def sequential_scan_bwd_kernel(
         h_grad += tl.load(d_out_ptr + offs_nd, mask=mask_nd).to(tl.float32) # [ND]
         
         delta = tl.load(delta_ptr + offs_d, mask = mask_d).to(tl.float32) # [D]
+
+        #NOTE: New
+        delta_bwd_act = softplus_bwd(delta)
+        delta = softplus_fwd(delta)
+
         h_rec = tl.load(o_ptr + offs_nd, mask=mask_nd).to(tl.float32)
         intermediate = (h_grad * h_rec).reshape(BLOCKSIZE_D, BLOCKSIZE_N) * tl.exp(delta[:,None] * A)
 
         delta_grad = tl.sum(intermediate * A, axis = -1) # [D,]
         delta_grad += tl.sum(h_grad.reshape(BLOCKSIZE_D, BLOCKSIZE_N) * (B[None,:] * x[:,None]), axis = -1)
+
+        #NOTE: New
+        delta_grad = delta_grad*delta_bwd_act
         tl.store(ddelta_ptr + offs_d, mask = mask_d, value=delta_grad.to(tl.bfloat16))
 
         x_grad = tl.sum(h_grad.reshape(BLOCKSIZE_D, BLOCKSIZE_N) * (delta[:,None] * B[None, :]), axis = -1)
@@ -268,9 +292,16 @@ def sequential_scan_bwd_kernel(
     h_grad += tl.load(d_out_ptr + offs_nd, mask=mask_nd).to(tl.float32) # [ND]
 
     delta_grad = tl.sum(h_grad.reshape(BLOCKSIZE_D, BLOCKSIZE_N) * (B[None,:] * x[:,None]), axis = -1)
-    tl.store(ddelta_ptr + offs_d, mask = mask_d, value=delta_grad.to(tl.bfloat16))
 
     delta = tl.load(delta_ptr + offs_d, mask = mask_d).to(tl.float32) # [D]
+
+    delta_bwd_act = softplus_bwd(delta)
+
+    delta = softplus_fwd(delta)
+
+    delta_grad = delta_grad*delta_bwd_act
+    
+    tl.store(ddelta_ptr + offs_d, mask = mask_d, value=delta_grad.to(tl.bfloat16))
 
     x_grad = tl.sum(h_grad.reshape(BLOCKSIZE_D, BLOCKSIZE_N) * (delta[:,None] * B[None, :]), axis = -1)
     tl.store(dx_ptr + offs_d, mask = mask_d, value = x_grad.to(tl.bfloat16))
@@ -279,6 +310,12 @@ def sequential_scan_bwd_kernel(
     B_grad = tl.sum(h_grad.reshape(BLOCKSIZE_D, BLOCKSIZE_N) * (delta[:,None] * x[:,None]), axis = -2)
     tl.store(dB_ptr + offs_n, mask = mask_n, value=B_grad.to(tl.bfloat16))
 
+    A_grad_block_ptr = tl.make_block_ptr(dA_ptr + (bs_pid * dA_bs_stride), 
+                                shape = (BLOCKSIZE_D, BLOCKSIZE_N), 
+                                block_shape= (BLOCKSIZE_D, BLOCKSIZE_N), 
+                                offsets=(0,0), 
+                                strides = (dA_row_stride, 1), order = (1,0))
+                                
     tl.store(A_grad_block_ptr, A_grad)
 
 

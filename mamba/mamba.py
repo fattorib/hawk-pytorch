@@ -123,7 +123,7 @@ class Mamba(nn.Module):
 
         (delta, B, C) = x_dbl.split(split_size=[self.config.dt_rank, n, n], dim=-1)
 
-        delta = torch.nn.functional.softplus(self.dt_proj(delta))
+        delta = self.dt_proj(delta)
 
         # TODO: Fuse the remainder of these too
         scan_out = self.scan_fn(A, delta, B, x)
