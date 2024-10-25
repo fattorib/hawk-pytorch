@@ -90,59 +90,6 @@ def sequential_scan_fwd_kernel(
         tl.store(hidden_ptr + offs_st, recc.to(tl.bfloat16),mask = offs_st < numel_st)
 
 
-
-def sequential_scan_forward(
-    A: torch.Tensor,  # [d_in, n]
-    delta: torch.Tensor, # [b,l,d]
-    B: torch.Tensor,  # [b,l,n]
-    x: torch.Tensor # [b,l,d]
-) -> torch.Tensor: # [b,l, d*n]
-
-    """Computes forward pass of a linear scan."""
-    n = A.shape[1]
-    b,l,d = x.shape
-
-    o = torch.empty((b,l, d*n), dtype = x.dtype, device=x.device)
-
-    recurrent_size = n*d
-
-    BLOCKSIZE_LD_N = triton.next_power_of_2(n)
-    BLOCKSIZE_LD_D = triton.next_power_of_2(d)
-    BLOCKSIZE_ST = triton.next_power_of_2(recurrent_size)
-
-    grid = (b,)
-
-    #TODO: These are untuned
-    match (recurrent_size):
-        case _ if (recurrent_size) <= 256:
-            warps = 1
-
-        case _ if (recurrent_size) <= 512:
-            warps = 2
-
-        case _ if (recurrent_size) <= 1024:
-            warps = 4
-
-        case _ :
-            warps = 16
-    
-    
-    #fmt: off
-    sequential_scan_fwd_kernel[grid](
-        A,B,delta,x, o,
-        A.stride(0), A.stride(1), 
-        B.stride(0), B.stride(1),
-        x.stride(0), x.stride(1),
-        o.stride(0), o.stride(1),
-        l,d,n,recurrent_size,
-        BLOCKSIZE_LD_N = BLOCKSIZE_LD_N,
-        BLOCKSIZE_LD_D = BLOCKSIZE_LD_D,
-        BLOCKSIZE_ST = BLOCKSIZE_ST,
-        num_warps = warps
-    )
-    #fmt: on
-    return o
-
 @triton.jit
 def sequential_scan_bwd_kernel(
     A_ptr,B_ptr, delta_ptr, x_ptr, o_ptr,d_out_ptr,
@@ -318,9 +265,60 @@ def sequential_scan_bwd_kernel(
                                 
     tl.store(A_grad_block_ptr, A_grad)
 
+def sequential_scan_forward(
+    A: torch.Tensor,  # [d_in, n]
+    delta: torch.Tensor, # [b,l,d]
+    B: torch.Tensor,  # [b,l,n]
+    x: torch.Tensor # [b,l,d]
+) -> torch.Tensor: # [b,l, d*n]
 
+    """Computes forward pass of a linear scan."""
+    n = A.shape[1]
+    b,l,d = x.shape
 
+    o = torch.empty((b,l, d*n), dtype = x.dtype, device=x.device)
 
+    recurrent_size = n*d
+
+    BLOCKSIZE_LD_N = triton.next_power_of_2(n)
+    BLOCKSIZE_LD_D = triton.next_power_of_2(d)
+    BLOCKSIZE_ST = triton.next_power_of_2(recurrent_size)
+
+    grid = (b,)
+
+    #TODO: These are untuned
+    match (recurrent_size):
+        case _ if (recurrent_size) <= 256:
+            warps = 1
+
+        case _ if (recurrent_size) <= 512:
+            warps = 2
+
+        case _ if (recurrent_size) <= 1024:
+            warps = 4
+
+        case _ :
+            warps = 8
+    
+    
+    #fmt: off
+    sequential_scan_fwd_kernel[grid](
+        A,B,delta,x, o,
+        A.stride(0), A.stride(1), 
+        B.stride(0), B.stride(1),
+        x.stride(0), x.stride(1),
+        o.stride(0), o.stride(1),
+        l,d,n,recurrent_size,
+        BLOCKSIZE_LD_N = BLOCKSIZE_LD_N,
+        BLOCKSIZE_LD_D = BLOCKSIZE_LD_D,
+        BLOCKSIZE_ST = BLOCKSIZE_ST,
+        num_warps = warps,
+        num_stages = 1
+    )
+    #fmt: on
+    return o
+
+#TODO: Chunked along channel dimension is actually faster 
 def sequential_scan_backward(
     A: torch.Tensor,  # [d_in, n]
     delta: torch.Tensor, # [b,l,d]
@@ -360,7 +358,7 @@ def sequential_scan_backward(
             warps = 4
 
         case _ :
-            warps = 16
+            warps = 8
     
     
     #fmt: off
@@ -379,7 +377,8 @@ def sequential_scan_backward(
         BLOCKSIZE_N,
         BLOCKSIZE_D,
         BLOCKSIZE_ND,
-        num_warps = warps
+        num_warps = warps,
+        num_stages = 1
     )
     #fmt: on
     return A_batch_grad, delta_grad, B_grad, x_grad
