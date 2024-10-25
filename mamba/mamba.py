@@ -112,6 +112,8 @@ class Mamba(nn.Module):
 
         self.scan_fn = linear_scan
 
+        self.post_norm = RMSNorm(dim=self.config.intermediate_size)
+
     def _ssm(self, x):
         n = self.A_log.shape[1]
         b, l, d = x.shape
@@ -162,6 +164,8 @@ class Mamba(nn.Module):
         y = self._ssm(x)
 
         y = y * F.silu(res)
+
+        y = self.post_norm(y)
 
         output = self.out_proj(y)
 
