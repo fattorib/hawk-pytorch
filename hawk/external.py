@@ -168,26 +168,6 @@ def rnn_param_init(
             raise NotImplementedError()
 
 
-_MAX_SQRT_GRADIENT = 1000.0
-
-
-class SqrtBoundDerivative(torch.autograd.Function):
-    """Computes a square root with a gradient clipped at `_MAX_SQRT_GRADIENT`."""
-
-    @staticmethod
-    def forward(ctx, x: torch.Tensor) -> torch.Tensor:
-        """The forward pass, which is a normal `sqrt`."""
-        ctx.save_for_backward(x)
-        return torch.sqrt(x)
-
-    @staticmethod
-    def backward(ctx, grad_output: torch.Tensor) -> torch.Tensor:  # type: ignore
-        """The backward pass, which clips the `sqrt` gradient."""
-        (x,) = ctx.saved_tensors
-        clipped_x_times_4 = torch.clip(4.0 * x, min=1 / (_MAX_SQRT_GRADIENT**2))
-        return grad_output / torch.sqrt(clipped_x_times_4)
-
-
 class BlockDiagonalLinear(nn.Module):
     """Block-diagonal linear layer."""
 
