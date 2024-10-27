@@ -37,32 +37,30 @@ def sequential_scan_fwd_kernel(
     hidden_ptr,
     bs_stride,sq_stride,
     num_context: tl.constexpr,
-    numel: tl.constexpr,
     BLOCKSIZE: tl.constexpr
 ):
     #fmt: on
 
-    C: tl.constexpr = -8.0 
+    C = -8.0 
 
     bs_pid = tl.program_id(0)
 
     channel_pid = tl.program_id(1)
 
     offs = tl.arange(0, BLOCKSIZE)
-    mask = offs < numel
 
     x_ptr += bs_pid * bs_stride + (channel_pid*BLOCKSIZE)
     x_rg_lru_ptr += bs_pid * bs_stride + (channel_pid*BLOCKSIZE)
     a_rg_lru_ptr += bs_pid * bs_stride + (channel_pid*BLOCKSIZE)
     hidden_ptr += bs_pid * bs_stride + (channel_pid*BLOCKSIZE)
 
-    a_param = tl.load(a_param_ptr + (channel_pid*BLOCKSIZE) + offs, mask = mask).to(tl.float32)
+    a_param = tl.load(a_param_ptr + (channel_pid*BLOCKSIZE) + offs, ).to(tl.float32)
 
     # compute first hidden state
 
-    x = tl.load(x_ptr + offs, mask = mask).to(tl.float32)
-    x_rg_lru = tl.load(x_rg_lru_ptr + offs, mask = mask).to(tl.float32)
-    a_rg_lru = tl.load(a_rg_lru_ptr + offs, mask = mask).to(tl.float32)
+    x = tl.load(x_ptr + offs, ).to(tl.float32)
+    x_rg_lru = tl.load(x_rg_lru_ptr + offs, ).to(tl.float32)
+    a_rg_lru = tl.load(a_rg_lru_ptr + offs, ).to(tl.float32)
 
     x_rg_lru = tl.sigmoid(x_rg_lru)
     a_rg_lru = tl.sigmoid(a_rg_lru)
@@ -80,7 +78,7 @@ def sequential_scan_fwd_kernel(
 
     hidden_t = beta_t
 
-    tl.store(hidden_ptr + offs, hidden_t.to(tl.bfloat16), mask = mask)
+    tl.store(hidden_ptr + offs, hidden_t.to(tl.bfloat16), )
 
     for i in range(1, num_context):
         hidden_ptr += sq_stride
@@ -88,9 +86,9 @@ def sequential_scan_fwd_kernel(
         x_rg_lru_ptr += sq_stride
         a_rg_lru_ptr += sq_stride
 
-        x = tl.load(x_ptr + offs, mask = mask).to(tl.float32)
-        x_rg_lru = tl.load(x_rg_lru_ptr + offs, mask = mask).to(tl.float32)
-        a_rg_lru = tl.load(a_rg_lru_ptr + offs, mask = mask).to(tl.float32)
+        x = tl.load(x_ptr + offs, ).to(tl.float32)
+        x_rg_lru = tl.load(x_rg_lru_ptr + offs, ).to(tl.float32)
+        a_rg_lru = tl.load(a_rg_lru_ptr + offs, ).to(tl.float32)
 
         x_rg_lru = tl.sigmoid(x_rg_lru)
         a_rg_lru = tl.sigmoid(a_rg_lru)
@@ -108,7 +106,7 @@ def sequential_scan_fwd_kernel(
 
         hidden_t = (alpha_t * hidden_t) + beta_t
 
-        tl.store(hidden_ptr + offs, hidden_t.to(tl.bfloat16), mask = mask)
+        tl.store(hidden_ptr + offs, hidden_t.to(tl.bfloat16), )
 
 #fmt: off
 @triton.jit
@@ -119,11 +117,10 @@ def sequential_scan_bwd_kernel(
     bs_stride, sq_stride,
     aparam_bs_stride,
     num_context: tl.constexpr,
-    numel: tl.constexpr,
     BLOCKSIZE: tl.constexpr
 ):
     
-    C: tl.constexpr = -8.0 
+    C = -8.0 
 
     #fmt: on
     bs_pid = tl.program_id(0)
@@ -150,17 +147,15 @@ def sequential_scan_bwd_kernel(
 
     offs = tl.arange(0, BLOCKSIZE)
     
-    mask = offs < numel
-
-    a_param = tl.load(a_param_ptr + (channel_pid*BLOCKSIZE) + offs, mask = mask).to(tl.float32)
+    a_param = tl.load(a_param_ptr + (channel_pid*BLOCKSIZE) + offs, ).to(tl.float32)
 
     # compute (t = T) outside loop
-    h_grad = tl.load(d_out_ptr + offs, mask=mask).to(tl.float32)
-    h_rec = tl.load(h_saved_ptr + offs, mask=mask).to(tl.float32)
+    h_grad = tl.load(d_out_ptr + offs).to(tl.float32)
+    h_rec = tl.load(h_saved_ptr + offs).to(tl.float32)
 
-    x = tl.load(x_ptr + offs, mask=mask).to(tl.float32)
-    x_rg_lru = tl.load(x_rg_lru_ptr + offs, mask=mask).to(tl.float32)
-    a_rg_lru = tl.load(a_rg_lru_ptr + offs, mask=mask).to(tl.float32)
+    x = tl.load(x_ptr + offs).to(tl.float32)
+    x_rg_lru = tl.load(x_rg_lru_ptr + offs).to(tl.float32)
+    a_rg_lru = tl.load(a_rg_lru_ptr + offs).to(tl.float32)
 
     d_alpha = h_grad*h_rec
     d_beta = h_grad
@@ -196,9 +191,9 @@ def sequential_scan_bwd_kernel(
 
     a_param_batched_grad += dlog_a * C * tl.sigmoid(a_rg_lru) * softplus_bwd(a_param)
 
-    tl.store(dx_ptr + offs, x_grad.to(tl.bfloat16), mask = mask)
-    tl.store(dx_rg_lru_ptr+ offs, x_rg_lru_grad.to(tl.bfloat16), mask = mask)
-    tl.store(da_rg_lru_ptr+ offs, a_rg_lru_grad.to(tl.bfloat16), mask = mask)
+    tl.store(dx_ptr + offs, x_grad.to(tl.bfloat16), )
+    tl.store(dx_rg_lru_ptr+ offs, x_rg_lru_grad.to(tl.bfloat16), )
+    tl.store(da_rg_lru_ptr+ offs, a_rg_lru_grad.to(tl.bfloat16), )
 
 
     for _ in range(2, num_context):
@@ -219,16 +214,16 @@ def sequential_scan_bwd_kernel(
 
         h_grad = a * h_grad
 
-        grad_out = tl.load(d_out_ptr + offs,mask=mask).to(tl.float32)
-        h_rec = tl.load(h_saved_ptr + offs, mask=mask).to(tl.float32)
+        grad_out = tl.load(d_out_ptr + offs,).to(tl.float32)
+        h_rec = tl.load(h_saved_ptr + offs, ).to(tl.float32)
         h_grad += grad_out
 
         d_alpha = h_grad * h_rec
         d_beta = h_grad
 
-        x = tl.load(x_ptr + offs, mask=mask).to(tl.float32)
-        x_rg_lru = tl.load(x_rg_lru_ptr + offs, mask=mask).to(tl.float32)
-        a_rg_lru = tl.load(a_rg_lru_ptr + offs, mask=mask).to(tl.float32)
+        x = tl.load(x_ptr + offs,).to(tl.float32)
+        x_rg_lru = tl.load(x_rg_lru_ptr + offs,).to(tl.float32)
+        a_rg_lru = tl.load(a_rg_lru_ptr + offs,).to(tl.float32)
 
         log_a = (
             C
@@ -260,9 +255,9 @@ def sequential_scan_bwd_kernel(
 
         a_param_batched_grad += dlog_a * C * tl.sigmoid(a_rg_lru) * softplus_bwd(a_param)
 
-        tl.store(dx_ptr + offs, x_grad.to(tl.bfloat16), mask = mask)
-        tl.store(dx_rg_lru_ptr + offs, x_rg_lru_grad.to(tl.bfloat16), mask = mask)
-        tl.store(da_rg_lru_ptr + offs, a_rg_lru_grad.to(tl.bfloat16), mask = mask)
+        tl.store(dx_ptr + offs, x_grad.to(tl.bfloat16), )
+        tl.store(dx_rg_lru_ptr + offs, x_rg_lru_grad.to(tl.bfloat16), )
+        tl.store(da_rg_lru_ptr + offs, a_rg_lru_grad.to(tl.bfloat16), )
 
     dx_ptr -= sq_stride
     dx_rg_lru_ptr -= sq_stride
@@ -277,14 +272,14 @@ def sequential_scan_bwd_kernel(
 
     a = tl.exp(log_a)
     h_grad = a * h_grad
-    grad_out = tl.load(d_out_ptr + offs,mask=mask).to(tl.float32)
+    grad_out = tl.load(d_out_ptr + offs).to(tl.float32)
     h_grad += grad_out
 
     d_beta = h_grad
 
-    x = tl.load(x_ptr + offs, mask=mask).to(tl.float32)
-    x_rg_lru = tl.load(x_rg_lru_ptr + offs, mask=mask).to(tl.float32)
-    a_rg_lru = tl.load(a_rg_lru_ptr + offs, mask=mask).to(tl.float32)
+    x = tl.load(x_ptr + offs,).to(tl.float32)
+    x_rg_lru = tl.load(x_rg_lru_ptr + offs,).to(tl.float32)
+    a_rg_lru = tl.load(a_rg_lru_ptr + offs,).to(tl.float32)
 
     log_a = (
         C
@@ -315,11 +310,11 @@ def sequential_scan_bwd_kernel(
 
     a_param_batched_grad += dlog_a * C * tl.sigmoid(a_rg_lru) * softplus_bwd(a_param)
 
-    tl.store(dx_ptr + offs, x_grad.to(tl.bfloat16), mask = mask)
-    tl.store(dx_rg_lru_ptr + offs, x_rg_lru_grad.to(tl.bfloat16), mask = mask)
-    tl.store(da_rg_lru_ptr + offs, a_rg_lru_grad.to(tl.bfloat16), mask = mask)
+    tl.store(dx_ptr + offs, x_grad.to(tl.bfloat16))
+    tl.store(dx_rg_lru_ptr + offs, x_rg_lru_grad.to(tl.bfloat16))
+    tl.store(da_rg_lru_ptr + offs, a_rg_lru_grad.to(tl.bfloat16))
 
-    tl.store(da_param_ptr + offs,a_param_batched_grad.to(tl.float32), mask = mask)
+    tl.store(da_param_ptr + offs,a_param_batched_grad.to(tl.float32), )
 
 def sequential_scan_forward(
     x: torch.Tensor,
@@ -335,6 +330,8 @@ def sequential_scan_forward(
 
     BLOCKSIZE = 64
 
+    assert d % BLOCKSIZE == 0, f"Error: expected model dimension to be a multiple of {BLOCKSIZE}"
+
     num_blocks = d // BLOCKSIZE
 
     grid = (b,num_blocks)
@@ -346,7 +343,7 @@ def sequential_scan_forward(
         x,x_rg_lru,a_rg_lru, a_param,
         hidden,
         x.stride(0),x.stride(1),
-        sq,d,BLOCKSIZE, 
+        sq,BLOCKSIZE, 
         num_warps = warps, # type: ignore
         num_stages = 2 # type: ignore
     )
@@ -361,7 +358,7 @@ def sequential_scan_backward(
     a_param_saved, # [d]
     h_saved, # [b,sq,d]
     grad_out: torch.Tensor,  # [b,sq,d]
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Computes backward pass of a linear scan."""
     
     b,l,d = grad_out.shape
@@ -374,6 +371,8 @@ def sequential_scan_backward(
     b, sq, d = h_saved.shape
 
     BLOCKSIZE = 64
+
+    assert d % BLOCKSIZE == 0, f"Error: expected model dimension to be a multiple of {BLOCKSIZE}"
 
     num_blocks = d // BLOCKSIZE
 
@@ -400,7 +399,7 @@ def sequential_scan_backward(
         x_grad, x_rg_lru_grad, a_rg_lru_grad, a_param_batched,
         x_saved.stride(0), x_saved.stride(1),
         a_param_batched.stride(0),
-        sq, d, BLOCKSIZE, 
+        sq, BLOCKSIZE, 
         num_warps = warps, # type: ignore
         num_stages = 2 # type: ignore
     )
@@ -419,7 +418,7 @@ class DiagonalRecurrence(Function):
 
     @staticmethod
     @torch.amp.custom_bwd(device_type = 'cuda') # type: ignore
-    def backward(ctx, grad_output) -> Tuple[torch.Tensor, torch.Tensor, None]: # type: ignore
+    def backward(ctx, grad_output) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]: # type: ignore
         (x,x_rg_lru,a_rg_lru,a_param,h_saved) = ctx.saved_tensors
 
         x_grad, x_rg_lru_grad, a_rg_lru_grad, a_param_grad = sequential_scan_backward(x,x_rg_lru,a_rg_lru,a_param, h_saved, grad_output)
