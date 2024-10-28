@@ -28,9 +28,9 @@ class HawkConfig:
     post_norm: bool = False
 
 
-# ------
-# Helper
-# ------
+# ----
+# Init
+# ----
 
 
 def lecun_init(w: torch.Tensor, d_in: int):
@@ -140,6 +140,7 @@ class Hawk(nn.Module):
         return self.resid_proj(F.gelu(gate) * self.norm(h))
 
     def inference_prologue(self, x):
+        # inference-only prologue function
         gate_x = torch.sigmoid(self.rg_lru_input_gate(x))
         gate_a = torch.sigmoid(self.rg_lru_a_gate(x))
 
