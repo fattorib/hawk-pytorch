@@ -149,6 +149,8 @@ class Mamba(nn.Module):
             and self.use_cache
         )
 
+        #TODO: Add activation checkpointing 
+        
         cache = None
 
         x_and_res = self.in_proj(x)  # shape (b, l, 2 * d_in)
