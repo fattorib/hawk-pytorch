@@ -9,8 +9,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .cache import RNNCache
-from .external import BlockDiagonalLinear, Conv1D, SqrtBoundDerivative, rnn_param_init
-from .scan import linear_scan
+from .external import BlockDiagonalLinear, Conv1D, rnn_param_init
+from .scan_fused import fused_linear_scan
 
 # ------
 # Config
@@ -28,9 +28,9 @@ class HawkConfig:
     post_norm: bool = False
 
 
-# ------
-# Helper
-# ------
+# ----
+# Init
+# ----
 
 
 def lecun_init(w: torch.Tensor, d_in: int):
@@ -139,7 +139,8 @@ class Hawk(nn.Module):
     def epilogue(self, gate, h):
         return self.resid_proj(F.gelu(gate) * self.norm(h))
 
-    def prologue(self, x):
+    def inference_prologue(self, x):
+        # inference-only prologue function
         gate_x = torch.sigmoid(self.rg_lru_input_gate(x))
         gate_a = torch.sigmoid(self.rg_lru_a_gate(x))
 
@@ -148,9 +149,7 @@ class Hawk(nn.Module):
         a_square = torch.exp(2 * log_a.float())
         gated_x = x * gate_x
 
-        multiplier = SqrtBoundDerivative.apply(1 - a_square)
-
-        assert multiplier is not None
+        multiplier = torch.sqrt(1 - a_square)
 
         normalized_x = gated_x * multiplier.to(x.dtype)
 
@@ -184,11 +183,12 @@ class Hawk(nn.Module):
         if has_layer_past:
             x = x[:, -1:, ...]
 
-        a, normalized_x = self.prologue(x)
+        x_rg_lru = self.rg_lru_input_gate(x)
+        a_rg_lru = self.rg_lru_a_gate(x)
 
         cache = None
         if not has_layer_past:
-            h = linear_scan(a, normalized_x)
+            h = fused_linear_scan(x, x_rg_lru, a_rg_lru, self.rg_lru_a_param.float())
 
             if self.use_cache:
                 assert h is not None
@@ -196,6 +196,8 @@ class Hawk(nn.Module):
                 cache = layer_past
 
         else:
+            a, normalized_x = self.inference_prologue(x)
+
             h = (a * layer_past.recc_state) + normalized_x
 
             layer_past.update_cache(h[:, -1:, :])
