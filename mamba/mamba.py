@@ -7,9 +7,10 @@ from typing import List, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from einops import einsum, rearrange, repeat
+from einops import rearrange, repeat
 
 from .cache import RNNCache
+from .scan_fused import fused_scan
 
 # ------
 # Config
@@ -108,17 +109,14 @@ class Mamba(nn.Module):
             padding=self.temporal_width - 1,
         )
 
-        from .scan_fused import linear_scan
-
-        self.scan_fn = linear_scan
+        self.scan_fn = fused_scan
 
         self.post_norm = RMSNorm(dim=self.config.intermediate_size)
 
     def _ssm(self, x):
         n = self.A_log.shape[1]
-        b, l, d = x.shape
 
-        A = -torch.exp(self.A_log.float())  # shape (d_in, n)
+        A = -torch.exp(self.A_log.float())
         D = self.D.float()
 
         x_dbl = self.x_proj(x)
@@ -127,12 +125,14 @@ class Mamba(nn.Module):
 
         delta = self.dt_proj(delta)
 
-        # TODO: Fuse the remainder of these too
-        scan_out = self.scan_fn(A, delta, B, x)
-
-        scan_out = rearrange(scan_out, "b l (d n) -> b l d n", d=d, n=n)
-
-        y = einsum(scan_out, C, "b l d_in n, b l n -> b l d_in")
+        scan_out = self.scan_fn(
+            A,
+            delta.mT.contiguous(),
+            B.mT.contiguous(),
+            C.mT.contiguous(),
+            x.mT.contiguous(),
+        )
+        y = scan_out.mT.contiguous()
 
         y = y + x * D
 

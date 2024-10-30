@@ -6,6 +6,25 @@ import triton.language as tl
 from torch.autograd import Function
 
 
+# from https://srush.github.io/annotated-mamba/hard.html
+@triton.jit
+def rol(a1, b1_last, b1_cur, a2, b2_last, b2_cur):
+    return a1 + a2, tl.where(a2 == 1, b1_cur, 0) + b2_last, b2_cur
+
+
+@triton.jit
+def roll(y, dim, rev=0):
+    _, rh2, _ = tl.associative_scan((1 + 0 * y, 0.0 * y, y), dim, rol, reverse=rev)
+    return rh2
+
+
+@triton.jit
+def associative_binary_op(fl, xl, fr, xr):
+    f = fr * fl
+    x = fr * xl + xr
+    return f, x
+
+
 @triton.jit
 def softplus_fwd(x):
     return tl.log(1 + tl.exp(x))
@@ -16,378 +35,279 @@ def softplus_bwd(x):
     return tl.exp(x) / (1 + tl.exp(x))
 
 
-# fmt: off
 @triton.jit
-def sequential_scan_fwd_kernel(
-    A_ptr,B_ptr,delta_ptr,x_ptr,
-    hidden_ptr,
-    A_r_stride, A_c_stride, 
-    B_b_stride, B_l_stride,
-    x_b_stride, x_l_stride,
-    o_b_stride, o_l_stride,
-    num_context: tl.constexpr,
-    numel_ld_d: tl.constexpr,
-    numel_ld_n: tl.constexpr,
-    numel_st: tl.constexpr,
-    BLOCKSIZE_LD_N: tl.constexpr,
-    BLOCKSIZE_LD_D: tl.constexpr,
-    BLOCKSIZE_ST: tl.constexpr
+def parallel_scan_fwd_kernel(
+    A_ptr,
+    B_ptr,
+    C_ptr,
+    delta_ptr,
+    x_ptr,
+    o_ptr,
+    A_row_stride,
+    A_col_stride,
+    B_b_stride,
+    B_n_stride,
+    x_b_stride,
+    x_d_stride,
+    BLOCKSIZE_L: tl.constexpr,
+    N: tl.constexpr,
 ):
-    #fmt: on
 
-    bs_pid = tl.program_id(0)
+    # parallelize over (batch, channel) dimension
+    b_pid = tl.program_id(0)
+    d_pid = tl.program_id(1)
 
-    B_ptr += bs_pid * B_b_stride
-    delta_ptr += bs_pid * x_b_stride
-    x_ptr += bs_pid * x_b_stride
+    x_ptr += b_pid * x_b_stride + d_pid * x_d_stride
+    delta_ptr += b_pid * x_b_stride + d_pid * x_d_stride
 
-    hidden_ptr += bs_pid * o_b_stride
+    l_offs = tl.arange(0, BLOCKSIZE_L)
 
-    offs_ld_n = tl.arange(0, BLOCKSIZE_LD_N)
-    offs_ld_d = tl.arange(0, BLOCKSIZE_LD_D)
+    C_ptr += b_pid * B_b_stride
+    B_ptr += b_pid * B_b_stride
 
-    offs_st = tl.arange(0, BLOCKSIZE_ST)[None,:]
-    
+    x = tl.load(x_ptr + l_offs).to(tl.float32)  # [L]
+    delta = softplus_fwd(tl.load(delta_ptr + l_offs).to(tl.float32))  # [L]
 
-    delta_i = tl.load(delta_ptr + offs_ld_d,mask = offs_ld_d < numel_ld_d).to(tl.float32)[None,:] # [1, D]
-    
-    delta_i = softplus_fwd(delta_i)
+    A_ptr += A_row_stride * d_pid
 
-    x_i = tl.load(x_ptr + offs_ld_d,mask = offs_ld_d < numel_ld_d ).to(tl.float32)[None,:] # [1, D]
-    B_i = tl.load(B_ptr + offs_ld_n,mask = offs_ld_n < numel_ld_n ).to(tl.float32)[None,:] # [1, N]
-
-    recc = (delta_i.expand_dims(2) * B_i.expand_dims(1) * x_i.expand_dims(2)).reshape(1, BLOCKSIZE_ST)
-
-    tl.store(hidden_ptr + offs_st, recc.to(tl.bfloat16),mask = offs_st < numel_st)
-
-    A_block_ptr = tl.make_block_ptr(A_ptr, 
-                                    shape = (BLOCKSIZE_LD_D, BLOCKSIZE_LD_N), 
-                                    block_shape= (BLOCKSIZE_LD_D, BLOCKSIZE_LD_N), 
-                                    offsets=(0,0), 
-                                    strides = (A_r_stride, A_c_stride), order = (1,0))
-    
-    A = tl.load(A_block_ptr)[None,:]
-
-    for _ in range(1, num_context):
-        B_ptr += B_l_stride
-        delta_ptr += x_l_stride
-        x_ptr += x_l_stride
-        hidden_ptr += o_l_stride
-
-        delta_i = tl.load(delta_ptr + offs_ld_d,mask = offs_ld_d < numel_ld_d).to(tl.float32)[None,:] # [1, D]
-        
-        delta_i = softplus_fwd(delta_i)
-        
-        x_i = tl.load(x_ptr + offs_ld_d,mask = offs_ld_d < numel_ld_d ).to(tl.float32)[None,:] # [1, D]
-        B_i = tl.load(B_ptr + offs_ld_n,mask = offs_ld_n < numel_ld_n ).to(tl.float32)[None,:] # [1, N]
-
-        deltaB_i = (delta_i.expand_dims(2) * B_i.expand_dims(1) * x_i.expand_dims(2)).reshape(1, BLOCKSIZE_ST)
-
-        deltaA_i = tl.exp(A * delta_i.expand_dims(2)).reshape(1, BLOCKSIZE_ST)
-
-        recc = (deltaA_i*recc) + deltaB_i
-
-        tl.store(hidden_ptr + offs_st, recc.to(tl.bfloat16),mask = offs_st < numel_st)
-
-
-@triton.jit
-def sequential_scan_bwd_kernel(
-    A_ptr,B_ptr, delta_ptr, x_ptr, o_ptr,d_out_ptr,
-    dA_ptr,dB_ptr,ddelta_ptr, dx_ptr, 
-    A_r_stride, A_c_stride,
-    dA_bs_stride, dA_row_stride,
-    delta_bs_stride, delta_sq_stride,
-    B_bs_stride, B_sq_stride,
-    o_bs_stride, o_sq_stride,
-    num_context: tl.constexpr,
-    numel_d: tl.constexpr,
-    numel_n: tl.constexpr,
-    numel_nd: tl.constexpr,
-    BLOCKSIZE_N: tl.constexpr,
-    BLOCKSIZE_D: tl.constexpr,
-    BLOCKSIZE_ND: tl.constexpr
-):
-    #fmt: on
-    bs_pid = tl.program_id(0)
-    
-
-    # offset ptrs to correct batch start 
-    A_block_ptr = tl.make_block_ptr(A_ptr, 
-                                    shape = (BLOCKSIZE_D, BLOCKSIZE_N), 
-                                    block_shape= (BLOCKSIZE_D, BLOCKSIZE_N), 
-                                    offsets=(0,0), 
-                                    strides = (A_r_stride, A_c_stride), order = (1,0))
-    
-   
-    
-    A = tl.load(A_block_ptr) # [BLOCKSIZE_D, BLOCKSIZE_N]
-
-    A_grad = tl.zeros([BLOCKSIZE_D, BLOCKSIZE_N], dtype = tl.float32)
-    
-
-    o_ptr += (bs_pid * o_bs_stride) + ((num_context -2)*o_sq_stride) 
-    d_out_ptr += (bs_pid * o_bs_stride) + ((num_context-1)*o_sq_stride)
-    delta_ptr += (bs_pid * delta_bs_stride) + ((num_context-1)*delta_sq_stride)
-    ddelta_ptr += (bs_pid * delta_bs_stride) + ((num_context-1)*delta_sq_stride)
-    B_ptr += (bs_pid * B_bs_stride) + ((num_context-1)*B_sq_stride)
-    x_ptr += (bs_pid * delta_bs_stride) + ((num_context-1)*delta_sq_stride)
-    dx_ptr += (bs_pid * delta_bs_stride) + ((num_context-1)*delta_sq_stride)
-    dB_ptr += (bs_pid * B_bs_stride) + ((num_context-1)*B_sq_stride)
-
-    offs_nd = tl.arange(0, BLOCKSIZE_ND)
-    offs_n = tl.arange(0, BLOCKSIZE_N)
-    offs_d = tl.arange(0, BLOCKSIZE_D)
-    
-    mask_nd = offs_nd < numel_nd
-    mask_n = offs_n < numel_n
-    mask_d = offs_d < numel_d
-
-    # compute (t = T) outside loop
-    h_grad = tl.load(d_out_ptr + offs_nd, mask=mask_nd).to(tl.float32) # [ND]
-    h_rec = tl.load(o_ptr + offs_nd, mask=mask_nd).to(tl.float32) # [ND]
-
-    B = tl.load(B_ptr + offs_n, mask = mask_n).to(tl.float32) # [N]
-    x = tl.load(x_ptr + offs_d, mask = mask_d).to(tl.float32) # [D]
-
-    delta = tl.load(delta_ptr + offs_d, mask = mask_d).to(tl.float32) # [D]
-
-    delta_bwd_act = softplus_bwd(delta)
-    delta = softplus_fwd(delta)
-
-
-    intermediate = (h_grad * h_rec).reshape(BLOCKSIZE_D, BLOCKSIZE_N) * tl.exp(delta[:,None] * A) # [D,N] * ([D,1] * [D,N])
-
-    delta_grad = tl.sum(intermediate * A, axis = -1) # [D,]
-
-    # [D,N] * ([1, N] * [D, 1] -> [D,N])
-    delta_grad += tl.sum(h_grad.reshape(BLOCKSIZE_D, BLOCKSIZE_N) * (B[None,:] * x[:,None]), axis = -1)
-    
-    delta_grad = delta_grad*delta_bwd_act
-    
-    # store delta grad -> this is correct!
-    tl.store(ddelta_ptr + offs_d, mask = mask_d, value=delta_grad.to(tl.bfloat16))
-    
-
-    # x_grad -> this is correct!
-    x_grad = tl.sum(h_grad.reshape(BLOCKSIZE_D, BLOCKSIZE_N) * (delta[:,None] * B[None, :]), axis = -1)
-    tl.store(dx_ptr + offs_d, mask = mask_d, value = x_grad.to(tl.bfloat16))
-
-    # B_grad -> this is correct!
-    B_grad = tl.sum(h_grad.reshape(BLOCKSIZE_D, BLOCKSIZE_N) * (delta[:,None] * x[:,None]), axis = -2)
-    tl.store(dB_ptr + offs_n, mask = mask_n, value=B_grad.to(tl.bfloat16))
-
-    A_grad += intermediate * delta[:,None]
-    
-    for _ in range(2, num_context):
-
-        # reduce pointer offsets
-        o_ptr -= o_sq_stride
-        d_out_ptr -= o_sq_stride
-        delta_ptr -= delta_sq_stride
-        ddelta_ptr -= delta_sq_stride
-        B_ptr -= B_sq_stride
-        x_ptr -= delta_sq_stride
-        dx_ptr -= delta_sq_stride
-        dB_ptr -= B_sq_stride
-
-        B = tl.load(B_ptr + offs_n, mask = mask_n).to(tl.float32) # [N]
-        x = tl.load(x_ptr + offs_d, mask = mask_d).to(tl.float32) # [D]
-
-    
-        h_grad = tl.exp(delta[:,None] * A).reshape(BLOCKSIZE_ND) * h_grad
-        h_grad += tl.load(d_out_ptr + offs_nd, mask=mask_nd).to(tl.float32) # [ND]
-        
-        delta = tl.load(delta_ptr + offs_d, mask = mask_d).to(tl.float32) # [D]
-
-        #NOTE: New
-        delta_bwd_act = softplus_bwd(delta)
-        delta = softplus_fwd(delta)
-
-        h_rec = tl.load(o_ptr + offs_nd, mask=mask_nd).to(tl.float32)
-        intermediate = (h_grad * h_rec).reshape(BLOCKSIZE_D, BLOCKSIZE_N) * tl.exp(delta[:,None] * A)
-
-        delta_grad = tl.sum(intermediate * A, axis = -1) # [D,]
-        delta_grad += tl.sum(h_grad.reshape(BLOCKSIZE_D, BLOCKSIZE_N) * (B[None,:] * x[:,None]), axis = -1)
-
-        #NOTE: New
-        delta_grad = delta_grad*delta_bwd_act
-        tl.store(ddelta_ptr + offs_d, mask = mask_d, value=delta_grad.to(tl.bfloat16))
-
-        x_grad = tl.sum(h_grad.reshape(BLOCKSIZE_D, BLOCKSIZE_N) * (delta[:,None] * B[None, :]), axis = -1)
-        tl.store(dx_ptr + offs_d, mask = mask_d, value = x_grad.to(tl.bfloat16))
-
-        # B_grad -> this is correct!
-        B_grad = tl.sum(h_grad.reshape(BLOCKSIZE_D, BLOCKSIZE_N) * (delta[:,None] * x[:,None]), axis = -2)
-        tl.store(dB_ptr + offs_n, mask = mask_n, value=B_grad.to(tl.bfloat16))
-
-        A_grad += intermediate * delta[:,None]
-
-
-    o_ptr -= o_sq_stride
-    d_out_ptr -= o_sq_stride
-    delta_ptr -= delta_sq_stride
-    ddelta_ptr -= delta_sq_stride
-    B_ptr -= B_sq_stride
-    x_ptr -= delta_sq_stride
-    dx_ptr -= delta_sq_stride
-    dB_ptr -= B_sq_stride
-
-    B = tl.load(B_ptr + offs_n, mask = mask_n).to(tl.float32) # [N]
-    x = tl.load(x_ptr + offs_d, mask = mask_d).to(tl.float32) # [D]
-
-    h_grad = tl.exp(delta[:,None] * A).reshape(BLOCKSIZE_ND) * h_grad
-    h_grad += tl.load(d_out_ptr + offs_nd, mask=mask_nd).to(tl.float32) # [ND]
-
-    delta_grad = tl.sum(h_grad.reshape(BLOCKSIZE_D, BLOCKSIZE_N) * (B[None,:] * x[:,None]), axis = -1)
-
-    delta = tl.load(delta_ptr + offs_d, mask = mask_d).to(tl.float32) # [D]
-
-    delta_bwd_act = softplus_bwd(delta)
-
-    delta = softplus_fwd(delta)
-
-    delta_grad = delta_grad*delta_bwd_act
-    
-    tl.store(ddelta_ptr + offs_d, mask = mask_d, value=delta_grad.to(tl.bfloat16))
-
-    x_grad = tl.sum(h_grad.reshape(BLOCKSIZE_D, BLOCKSIZE_N) * (delta[:,None] * B[None, :]), axis = -1)
-    tl.store(dx_ptr + offs_d, mask = mask_d, value = x_grad.to(tl.bfloat16))
-
-    # B_grad -> this is correct!
-    B_grad = tl.sum(h_grad.reshape(BLOCKSIZE_D, BLOCKSIZE_N) * (delta[:,None] * x[:,None]), axis = -2)
-    tl.store(dB_ptr + offs_n, mask = mask_n, value=B_grad.to(tl.bfloat16))
-
-    A_grad_block_ptr = tl.make_block_ptr(dA_ptr + (bs_pid * dA_bs_stride), 
-                                shape = (BLOCKSIZE_D, BLOCKSIZE_N), 
-                                block_shape= (BLOCKSIZE_D, BLOCKSIZE_N), 
-                                offsets=(0,0), 
-                                strides = (dA_row_stride, 1), order = (1,0))
-                                
-    tl.store(A_grad_block_ptr, A_grad)
-
-def sequential_scan_forward(
-    A: torch.Tensor,  # [d_in, n]
-    delta: torch.Tensor, # [b,l,d]
-    B: torch.Tensor,  # [b,l,n]
-    x: torch.Tensor # [b,l,d]
-) -> torch.Tensor: # [b,l, d*n]
-
-    """Computes forward pass of a linear scan."""
-    n = A.shape[1]
-    b,l,d = x.shape
-
-    o = torch.empty((b,l, d*n), dtype = x.dtype, device=x.device)
-
-    recurrent_size = n*d
-
-    BLOCKSIZE_LD_N = triton.next_power_of_2(n)
-    BLOCKSIZE_LD_D = triton.next_power_of_2(d)
-    BLOCKSIZE_ST = triton.next_power_of_2(recurrent_size)
-
-    grid = (b,)
-
-    #TODO: These are untuned
-    match (recurrent_size):
-        case _ if (recurrent_size) <= 256:
-            warps = 1
-
-        case _ if (recurrent_size) <= 512:
-            warps = 2
-
-        case _ if (recurrent_size) <= 1024:
-            warps = 4
-
-        case _ :
-            warps = 8
-    
-    
-    #fmt: off
-    sequential_scan_fwd_kernel[grid](
-        A,B,delta,x, o,
-        A.stride(0), A.stride(1), 
-        B.stride(0), B.stride(1),
-        x.stride(0), x.stride(1),
-        o.stride(0), o.stride(1),
-        l,d,n,recurrent_size,
-        BLOCKSIZE_LD_N = BLOCKSIZE_LD_N,
-        BLOCKSIZE_LD_D = BLOCKSIZE_LD_D,
-        BLOCKSIZE_ST = BLOCKSIZE_ST,
-        num_warps = warps,
-        num_stages = 1
+    y = tl.zeros(
+        [
+            BLOCKSIZE_L,
+        ],
+        dtype=tl.float32,
     )
-    #fmt: on
+
+    # backward pass needs to then reduce something somehow?
+    for chan_idx in range(N):
+
+        B_ch = tl.load(B_ptr + chan_idx * B_n_stride + l_offs).to(tl.float32)
+
+        C_ch = tl.load(C_ptr + chan_idx * B_n_stride + l_offs).to(tl.float32)
+
+        deltaB_ch = delta * x * B_ch  # [L]
+
+        A_ch = tl.load(A_ptr + chan_idx * A_col_stride).to(tl.float32)  # single value
+
+        deltaA_ch = tl.exp(A_ch * delta)  # [L]
+
+        _, o = tl.associative_scan(
+            (deltaA_ch, deltaB_ch), axis=0, combine_fn=associative_binary_op
+        )
+
+        y += o * C_ch
+
+    o_ptr += b_pid * x_b_stride + d_pid * x_d_stride
+    tl.store(o_ptr + l_offs, value=y.to(tl.bfloat16))
+
+
+def parallel_scan_forward(
+    A: torch.Tensor,  # [d_in, n]
+    delta: torch.Tensor,  # [b,d,l]
+    B: torch.Tensor,  # [b,n,l]
+    C: torch.Tensor,  # [b,n,l]
+    x: torch.Tensor,  # [b,d,l]
+) -> torch.Tensor:  # [b,d,l]
+
+    n = A.shape[1]
+    b, d, l = x.shape
+
+    o = torch.empty_like(x)
+
+    BLOCKSIZE_L = l
+    N = n
+
+    grid = (b, d)
+
+    num_warps = 2
+    if BLOCKSIZE_L > 1024:
+        num_warps = 4
+
+    # fmt: off
+    parallel_scan_fwd_kernel[grid](
+        A,B,C,delta,
+        x,o,
+        A.stride(0),A.stride(1),
+        B.stride(0),B.stride(1),
+        x.stride(0),x.stride(1),
+        BLOCKSIZE_L,N,
+        enable_fp_fusion = True, 
+        num_warps = num_warps
+    )
+    # fmt: on
+
     return o
 
-#TODO: Chunked along channel dimension is actually faster 
-def sequential_scan_backward(
-    A: torch.Tensor,  # [d_in, n]
-    delta: torch.Tensor, # [b,l,d]
-    B: torch.Tensor,  # [b,l,n]
-    x: torch.Tensor, # [b,l,d]
-    o: torch.Tensor, # [b,l, d*n]
-    grad_out: torch.Tensor # [b,l, d*n]
-) -> torch.Tensor: # [b,l, d*n]
 
-    """Computes forward pass of a linear scan."""
+# fmt: off
+@triton.jit
+def parallel_scan_bwd_kernel(
+    A_ptr,B_ptr,C_ptr,delta_ptr,
+    x_ptr,dout_ptr,
+    dA_ptr,dB_ptr,dC_ptr,ddelta_ptr, 
+    dx_ptr, delta_shifted_ptr,
+    A_row_stride,A_col_stride,
+    dA_b_stride,dA_row_stride,dA_col_stride,
+    B_b_stride,B_n_stride,
+    dB_b_stride,dB_d_stride, dB_n_stride,
+    x_b_stride, x_d_stride,
+    BLOCKSIZE_L: tl.constexpr, # sequence length
+    N: tl.constexpr, # state size
+):
+    # fmt: on
+
+    # parallelize over (batch, channel) dimension
+    b_pid = tl.program_id(0)
+    d_pid = tl.program_id(1)
+
+    dB_ptr += (b_pid * dB_b_stride) + d_pid * dB_d_stride
+    dC_ptr += (b_pid * dB_b_stride) + d_pid * dB_d_stride
+    dA_ptr += (b_pid*dA_b_stride) + d_pid*dA_row_stride
+
+    x_ptr += b_pid * x_b_stride + d_pid * x_d_stride
+    dx_ptr += b_pid * x_b_stride + d_pid * x_d_stride
+    ddelta_ptr += b_pid * x_b_stride + d_pid * x_d_stride
+    delta_ptr += b_pid * x_b_stride + d_pid * x_d_stride
+
+
+    delta_shifted_ptr += b_pid * x_b_stride + d_pid * x_d_stride
+    
+    dout_ptr += b_pid * x_b_stride + d_pid * x_d_stride
+
+    l_offs = tl.arange(0, BLOCKSIZE_L)
+
+    x = tl.load(x_ptr + l_offs).to(tl.float32)  # [L]
+    delta = softplus_fwd(tl.load(delta_ptr + l_offs).to(tl.float32))  # [L]
+
+    delta_shifted = softplus_fwd(tl.load(delta_shifted_ptr + l_offs).to(tl.float32))  # [L]
+
+    A_ptr += A_row_stride * d_pid
+
+    C_ptr += b_pid * B_b_stride
+    B_ptr += b_pid * B_b_stride
+    
+
+    dX = tl.zeros(
+        [
+            BLOCKSIZE_L,
+        ],
+        dtype=tl.float32,
+    )
+
+
+    ddelta = tl.zeros(
+        [
+            BLOCKSIZE_L,
+        ],
+        dtype=tl.float32,
+    )
+
+    for chan_idx in range(N):
+
+        B_ch = tl.load(B_ptr + chan_idx * B_n_stride + l_offs).to(tl.float32)
+        deltaB_ch = delta * x * B_ch  # [L]
+        A_ch = tl.load(A_ptr + chan_idx * A_col_stride).to(tl.float32)  # single value
+        deltaA_ch = tl.exp(A_ch * delta)  # [L]
+
+        dout = tl.load(dout_ptr + l_offs).to(tl.float32)
+        C = tl.load(C_ptr + chan_idx * B_n_stride + l_offs).to(tl.float32)
+
+        _, h_ch = tl.associative_scan( 
+            (deltaA_ch, deltaB_ch), axis=0, combine_fn=associative_binary_op
+        )
+
+
+        C_ch_grad = dout * h_ch
+
+        tl.store(dC_ptr + (chan_idx*dB_n_stride) + l_offs, value=C_ch_grad.to(tl.bfloat16))
+
+        out_h_grad = dout * C
+
+        # reverse scan
+
+        deltaA_ch_shifted = tl.exp(A_ch * delta_shifted)  # [L]
+        deltaA_ch_shifted = tl.where(tl.arange(0, BLOCKSIZE_L) < (BLOCKSIZE_L - 1), deltaA_ch_shifted, 0.0)
+        _, h_grad = tl.associative_scan((deltaA_ch_shifted, out_h_grad), axis=0, combine_fn=associative_binary_op, reverse=True)
+
+        dX += (h_grad * delta * B_ch)
+
+        B_ch_grad = h_grad * delta * x
+
+        tl.store(dB_ptr + (chan_idx*dB_n_stride) + l_offs, value=B_ch_grad.to(tl.bfloat16))
+
+        # need a way to create h_tilde from h_ch like: [0,h_0,h_1,...]
+        h_ch_rolled = roll(h_ch, dim = 0)
+
+        intermediate = h_grad * h_ch_rolled * deltaA_ch
+
+        ddelta += (intermediate * A_ch)
+        ddelta += (h_grad * (B_ch * x))
+
+        # print(intermediate.shape, delta.shape)
+        A_batched_grad = tl.sum(intermediate * delta)
+
+        tl.store(dA_ptr + (chan_idx), value=A_batched_grad.to(tl.float32))
+
+    # kinda dumb but w.e.
+    delta = tl.load(delta_ptr + l_offs).to(tl.float32)
+    ddelta = ddelta * softplus_bwd(delta)
+
+    tl.store(ddelta_ptr + l_offs, value= ddelta.to(tl.bfloat16))
+    tl.store(dx_ptr + l_offs, value= dX.to(tl.bfloat16))
+
+def parallel_scan_backward(A, delta, B, C, x, grad_output) -> torch.Tensor:
 
     n = A.shape[1]
-    b,l,d = x.shape
-
-    A_batch_grad = torch.empty((b, d, n), dtype = torch.float32, device=A.device)
-    delta_grad = torch.empty_like(delta)
-    B_grad = torch.empty_like(B)
-    x_grad = torch.empty_like(x)
-
-    recurrent_size = n*d
-
-    # we ld/st both N and D blocks
-    BLOCKSIZE_N = triton.next_power_of_2(n)
-    BLOCKSIZE_D = triton.next_power_of_2(d)
-    BLOCKSIZE_ND = triton.next_power_of_2(recurrent_size)
-
-    grid = (b,)
-
-    match (recurrent_size):
-        case _ if (recurrent_size) <= 256:
-            warps = 1
-
-        case _ if (recurrent_size) <= 512:
-            warps = 2
-
-        case _ if (recurrent_size) <= 1024:
-            warps = 4
-
-        case _ :
-            warps = 8
+    b, d, l = x.shape
     
+    BLOCKSIZE_L = l
+    N = n
+
+    grid = (b, d)
     
-    #fmt: off
-    sequential_scan_bwd_kernel[grid](
-        A,B, delta, x, o, grad_out,
-        A_batch_grad,B_grad,delta_grad, x_grad, 
-        A.stride(0),A.stride(1),
-        A_batch_grad.stride(0), A_batch_grad.stride(1),
-        delta.stride(0), delta.stride(1),
-        B.stride(0), B.stride(1),
-        o.stride(0), o.stride(1),
-        l,
-        d,
-        n,
-        recurrent_size,
-        BLOCKSIZE_N,
-        BLOCKSIZE_D,
-        BLOCKSIZE_ND,
-        num_warps = warps,
-        num_stages = 1
+    # [b, d, n]
+    A_batch_grad = torch.empty((b, A.shape[0], A.shape[1]), device=x.device)
+    
+
+    B_grad = torch.empty((b, d, n, l), device=x.device, dtype = torch.bfloat16) # [b, d, n, l] 
+    C_grad = torch.empty((b, d, n, l), device=x.device, dtype = torch.bfloat16) # [b, d, n, l] 
+
+    delta_grad = torch.empty_like(delta) # [b,d,l]
+    x_grad = torch.empty_like(x) # [b,d,l]
+    
+    num_warps = 2
+    if BLOCKSIZE_L > 1024:
+        num_warps = 4 
+    
+    delta_shifted = torch.cat([delta, torch.ones_like(delta[:, :, :1])], dim=-1)[:, :, 1:].contiguous()
+    parallel_scan_bwd_kernel[grid](
+        A, B, C, delta, x, grad_output,
+        A_batch_grad, B_grad, C_grad, delta_grad, x_grad, delta_shifted,
+        A.stride(0), A.stride(1),
+        A_batch_grad.stride(0), A_batch_grad.stride(1), A_batch_grad.stride(2),
+        B.stride(0),B.stride(1), 
+        B_grad.stride(0),B_grad.stride(1),B_grad.stride(2), 
+        x.stride(0), x.stride(1),
+        BLOCKSIZE_L,N,
+        enable_fp_fusion = True,
+        num_warps = num_warps
     )
-    #fmt: on
-    return A_batch_grad, delta_grad, B_grad, x_grad
+
+    return A_batch_grad.sum(dim=0), B_grad.sum(dim = 1), C_grad.sum(dim = 1), delta_grad, x_grad
 
 
-class DiagonalRecurrence(Function):
+class MambaRecurrence(Function):
     @staticmethod
-    @torch.amp.custom_fwd(device_type = 'cuda', cast_inputs=torch.bfloat16) # type: ignore
-    def forward(ctx,  A, delta, B, x) -> torch.Tensor:
+    @torch.amp.custom_fwd(device_type="cuda", cast_inputs=torch.bfloat16)  # type: ignore
+    def forward(ctx, A, delta, B, C, x) -> torch.Tensor:
+
+        if not A.is_contiguous():
+            A = A.contiguous()
+
+        if not C.is_contiguous():
+            C = C.contiguous()
+
+        if not delta.is_contiguous():
+            delta = delta.contiguous()
 
         if not B.is_contiguous():
             B = B.contiguous()
@@ -395,20 +315,22 @@ class DiagonalRecurrence(Function):
         if not x.is_contiguous():
             x = x.contiguous()
 
-        o = sequential_scan_forward(A,delta,B, x)
+        o = parallel_scan_forward(A, delta, B, C, x)
 
-        ctx.save_for_backward(A, delta, B, x, o)
+        ctx.save_for_backward(A, delta, B, C, x)
 
         return o
 
     @staticmethod
-    @torch.amp.custom_bwd(device_type = 'cuda') # type: ignore
-    def backward(ctx, grad_output) -> Tuple[torch.Tensor, torch.Tensor,  torch.Tensor, torch.Tensor]: # type: ignore
-        (A, delta, B, x, o) = ctx.saved_tensors
+    @torch.amp.custom_bwd(device_type="cuda")  # type: ignore
+    def backward(ctx, grad_output) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:  # type: ignore
+        (A, delta, B, C, x) = ctx.saved_tensors
 
-        A_batch_grad, delta_grad, B_grad, x_grad = sequential_scan_backward(A, delta, B, x, o, grad_output)
+        if not grad_output.is_contiguous():
+            grad_output = grad_output.contiguous()
 
-        return A_batch_grad.sum(dim=0).to(A.dtype), delta_grad, B_grad, x_grad
+        A_batch_grad, B_grad, C_grad, delta_grad, x_grad = parallel_scan_backward(A, delta, B, C, x, grad_output)
 
+        return A_batch_grad.to(A.dtype), delta_grad, B_grad, C_grad, x_grad
 
-linear_scan = DiagonalRecurrence.apply
+fused_scan = MambaRecurrence.apply
