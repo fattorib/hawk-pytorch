@@ -53,7 +53,7 @@ class Mamba(nn.Module):
         self.config = config
 
         self.in_proj = nn.Linear(
-            self.config.hidden_size, 2 * self.config.intermediate_size
+            self.config.hidden_size, 2 * self.config.intermediate_size, bias=False
         )
         self.x_proj = nn.Linear(
             self.config.intermediate_size,
@@ -111,8 +111,6 @@ class Mamba(nn.Module):
 
         self.scan_fn = fused_scan
 
-        self.post_norm = RMSNorm(dim=self.config.intermediate_size)
-
     def _ssm(self, x):
         n = self.A_log.shape[1]
 
@@ -149,8 +147,11 @@ class Mamba(nn.Module):
             and self.use_cache
         )
 
-        #TODO: Add activation checkpointing 
-        
+        # TODO: Add generation functionality
+
+        # TODO: Add activation checkpointing on the whole block
+        # input_proj, output_proj, convolution, activation, scan
+
         cache = None
 
         x_and_res = self.in_proj(x)  # shape (b, l, 2 * d_in)
@@ -165,9 +166,8 @@ class Mamba(nn.Module):
 
         y = self._ssm(x)
 
+        # TODO: Recompute this as a chunk
         y = y * F.silu(res)
-
-        y = self.post_norm(y)
 
         output = self.out_proj(y)
 
@@ -220,9 +220,8 @@ class MambaModel(nn.Module):
 
         for name, p in self.named_parameters():
             if name in ["resid_proj.weight"]:
-                torch.nn.init.normal_(
-                    p, mean=0.0, std=0.02 / math.sqrt(2 * config.num_hidden_layers)
-                )
+                nn.init.kaiming_uniform_(p, a=math.sqrt(5))
+                p /= math.sqrt(1.0 * config.num_hidden_layers)
 
     def _init_weights(self, module: nn.Module):
         """Initialize the weights"""
@@ -230,8 +229,6 @@ class MambaModel(nn.Module):
             if module.bias is not None:
                 if not getattr(module.bias, "_no_reinit", False):
                     nn.init.zeros_(module.bias)
-            else:
-                nn.init.normal_(module.weight, std=0.02)
 
         elif isinstance(module, nn.Embedding):
             nn.init.normal_(module.weight, std=0.02)
