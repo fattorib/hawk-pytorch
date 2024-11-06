@@ -1,6 +1,6 @@
 # Hawk - PyTorch 
 
-This is a PyTorch implementation of Hawk from [Griffin: Mixing Gated Linear Recurrences with Local Attention for Efficient Language Models](https://arxiv.org/abs/2402.19427). It uses a [custom Triton kernel](https://github.com/fattorib/fast_sequential_scan) for the sequential scan and supports `torch.compile`. Because of this, it is the fastest implementation of Hawk available for GPU. 
+This is a PyTorch implementation of Hawk from [Griffin: Mixing Gated Linear Recurrences with Local Attention for Efficient Language Models](https://arxiv.org/abs/2402.19427). It uses a [custom Triton kernel](https://github.com/fattorib/hawk-pytorch/pull/1) for the sequential scan and supports `torch.compile`. Because of this, it is the fastest implementation of Hawk available for GPU. 
 
 # Install
 
