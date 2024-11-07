@@ -101,7 +101,7 @@ def parallel_scan_fwd_kernel(
     tl.store(o_ptr + l_offs, value=y.to(tl.bfloat16))
 
 
-def parallel_scan_forward(
+def parallel_scan_fwd(
     A: torch.Tensor,  # [d_in, n]
     delta: torch.Tensor,  # [b,d,l]
     B: torch.Tensor,  # [b,n,l]
@@ -253,7 +253,7 @@ def parallel_scan_bwd_kernel(
     tl.store(ddelta_ptr + l_offs, value= ddelta.to(tl.bfloat16))
     tl.store(dx_ptr + l_offs, value= dX.to(tl.bfloat16))
 
-def parallel_scan_backward(A, delta, B, C, x, grad_output) -> torch.Tensor:
+def parallel_scan_bwd(A, delta, B, C, x, grad_output) -> torch.Tensor:
 
     n = A.shape[1]
     b, d, l = x.shape
@@ -309,7 +309,7 @@ class MambaRecurrence(Function):
         if not x.is_contiguous():
             x = x.contiguous()
 
-        o = parallel_scan_forward(A, delta, B, C, x)
+        o = parallel_scan_fwd(A, delta, B, C, x)
 
         ctx.save_for_backward(A, delta, B, C, x)
 
@@ -320,6 +320,11 @@ class MambaRecurrence(Function):
     def backward(ctx, grad_output) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:  # type: ignore
         (A, delta, B, C, x) = ctx.saved_tensors
 
-        A_batch_grad, B_grad, C_grad, delta_grad, x_grad = parallel_scan_backward(A, delta, B, C, x, grad_output)
+        A_batch_grad, B_grad, C_grad, delta_grad, x_grad = parallel_scan_bwd(A, delta, B, C, x, grad_output)
 
         return A_batch_grad, delta_grad, B_grad, C_grad, x_grad
+
+
+def selective_scan(A, delta, B, C, x):
+
+    return MambaRecurrence.apply(A, delta, B, C, x)

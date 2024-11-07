@@ -185,6 +185,9 @@ def causal_conv1d_fn_fwd(x, weight, bias=None, act: int = 1):
 
     grid = (b, d)
 
+    if not x.is_contiguous():
+        x = x.contiguous()
+
     match (seqlen):
         case _ if (seqlen) <= 2048:
             warps = 1
@@ -244,7 +247,7 @@ def causal_conv1d_fn_bwd(x, weight, bias, grad_out, act):
         device=bias.device,
     )
     weight_grad = torch.zeros(
-        size=(b, weight.shape[0], weight.shape[1]),
+        size=(b, weight.shape[0], kernel_t),
         dtype=weight.dtype,
         device=weight.device,
     )
@@ -285,7 +288,7 @@ def causal_conv1d_fn_bwd(x, weight, bias, grad_out, act):
         enable_fp_fusion=True,
         num_warps=warps,
     )
-    return x_grad, weight_grad.sum(dim=0), bias_grad.sum(dim=0)
+    return x_grad, weight_grad.sum(dim=0).unsqueeze(1), bias_grad.sum(dim=0)
 
 
 class CausalConv(Function):
@@ -314,3 +317,59 @@ def causal_conv(
     x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor, act: int
 ) -> torch.Tensor:
     return CausalConv.apply(x, weight, bias, act)
+
+
+if __name__ == "__main__":
+
+    b = 4
+    d = 128
+    l = 4096
+    width = 4
+
+    temporal_width = 4
+    conv1d = torch.nn.Conv1d(
+        in_channels=d,
+        out_channels=d,
+        bias=True,
+        kernel_size=width,
+        groups=d,
+        padding=width - 1,
+    )
+    conv1d.cuda()
+
+    x = torch.randn((b, d, l), device="cuda", dtype=torch.float32, requires_grad=True)
+
+    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        out_ref = F.silu(conv1d(x))[..., :l]
+
+    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        out_tl = causal_conv(x, conv1d.weight, conv1d.bias, act=1)
+        # out_tl = causal_conv1d_fn_fwd(x, conv1d.weight, conv1d.bias, act=1)
+    dy = torch.ones_like(out_ref)
+
+    print(torch.linalg.norm(out_ref - out_tl) / torch.linalg.norm(out_ref))
+
+    # # Backward pass - PyTorch
+    out_ref.backward(dy, retain_graph=True)
+    dx_torch = x.grad.clone()
+    dw_torch = conv1d.weight.grad.clone()
+    db_torch = conv1d.bias.grad.clone()
+
+    # Reset grads for manual implementation
+    x.grad = None
+    conv1d.weight.grad = None
+    conv1d.bias.grad = None
+
+    # Backward pass - Manual implementation
+    out_tl.backward(dy, retain_graph=True)
+
+    def relative_error(x: torch.Tensor, y: torch.Tensor) -> float:
+        return (torch.linalg.norm(x - y) / torch.linalg.norm(y)).item()
+
+    dx_manual = x.grad.clone()
+    dw_manual = conv1d.weight.grad.clone()
+    db_manual = conv1d.bias.grad.clone()
+
+    print(f"dx: {relative_error(dx_manual, dx_torch)}")
+    print(f"dW: {relative_error(dw_manual, dw_torch)}")
+    print(f"db: {relative_error(db_manual, db_torch)}")

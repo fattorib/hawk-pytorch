@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from einops import rearrange, repeat
 
 from .cache import RNNCache
-from .scan_fused import fused_scan
+from .scan_fused import selective_scan
 
 # ------
 # Config
@@ -46,7 +46,7 @@ class RMSNorm(torch.nn.Module):
         return output * self.weight
 
 
-class Mamba(nn.Module):
+class MambaBlock(nn.Module):
     def __init__(self, config: MambaConfig, use_cache: bool = False):
         super().__init__()
 
@@ -109,7 +109,7 @@ class Mamba(nn.Module):
             padding=self.temporal_width - 1,
         )
 
-        self.scan_fn = fused_scan
+        self.scan_fn = selective_scan
 
     def _ssm(self, x):
         n = self.A_log.shape[1]
@@ -149,9 +149,6 @@ class Mamba(nn.Module):
 
         # TODO: Add generation functionality
 
-        # TODO: Add activation checkpointing on the whole block
-        # input_proj, output_proj, convolution, activation, scan
-
         cache = None
 
         x_and_res = self.in_proj(x)  # shape (b, l, 2 * d_in)
@@ -166,12 +163,13 @@ class Mamba(nn.Module):
 
         y = self._ssm(x)
 
-        # TODO: Recompute this as a chunk
+        # # TODO: Recompute this as a chunk
         y = y * F.silu(res)
 
         output = self.out_proj(y)
 
         return output, cache
+        # return x, cache
 
 
 class RNNLayer(nn.Module):
@@ -179,7 +177,7 @@ class RNNLayer(nn.Module):
         super().__init__()
         self.use_cache = use_cache
 
-        self.recc = Mamba(config, use_cache)
+        self.recc = MambaBlock(config, use_cache)
 
         self.input_norm = RMSNorm(config.hidden_size)
 
