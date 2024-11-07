@@ -2,11 +2,14 @@ from typing import Tuple
 
 import torch
 import torch.nn.functional as F
-from einops import rearrange
 from torch.autograd import Function
 
 from mamba.causal_conv1d import causal_conv1d_fn_bwd, causal_conv1d_fn_fwd
 from mamba.scan_fused import parallel_scan_bwd, parallel_scan_fwd
+
+
+def silu_bwd(x):
+    return x.sigmoid() + (x * x.sigmoid() * (1 - x.sigmoid()))
 
 
 class MambaInnerFn(Function):
@@ -25,7 +28,6 @@ class MambaInnerFn(Function):
         dt_proj_b,
         out_proj_w,
     ):
-
         ctx.save_for_backward(
             x,
             in_proj_w,
@@ -45,30 +47,27 @@ class MambaInnerFn(Function):
 
         x = causal_conv1d_fn_fwd(x.mT.contiguous(), conv1d_w, conv1d_b, act=1)
 
-        # TODO: we probably don't need to do this since seq scan wants this format
-        x = rearrange(x, "b d l -> b l d")
-
         A = -torch.exp(A_log.float())
         D = D.float()
 
-        x_dbl = F.linear(x, x_proj_w)
+        x_dbl = torch.einsum("bdl,md->bml", x, x_proj_w)
 
         n = A.shape[1]
         dt_rank = dt_proj_w.shape[1]
-        (delta, B, C) = x_dbl.split(split_size=[dt_rank, n, n], dim=-1)
+        (delta, B, C) = x_dbl.split(split_size=[dt_rank, n, n], dim=1)
 
-        delta = F.linear(delta, dt_proj_w, dt_proj_b)
+        delta = torch.einsum("brl,nr->bnl", delta, dt_proj_w) + dt_proj_b[None, :, None]
 
         scan_out = parallel_scan_fwd(
             A,
-            delta.mT.contiguous(),
-            B.mT.contiguous(),
-            C.mT.contiguous(),
-            x.mT.contiguous(),
+            delta.contiguous(),
+            B.contiguous(),
+            C.contiguous(),
+            x.contiguous(),
         )
         y = scan_out.mT.contiguous()
 
-        y = y + x * D
+        y = y + x.mT.contiguous() * D
 
         y = y * F.silu(res)
 
@@ -109,34 +108,33 @@ class MambaInnerFn(Function):
         x_and_res = F.linear(x, in_proj_w)
         (x, res) = torch.chunk(x_and_res, chunks=2, dim=-1)
 
-        x_pre_conv = x.mT.contiguous().clone()
-
-        x = causal_conv1d_fn_fwd(x.mT.contiguous(), conv1d_w, conv1d_b, act=1)
+        x_conv_out = causal_conv1d_fn_fwd(x.mT.contiguous(), conv1d_w, conv1d_b, act=1)
 
         # TODO: we probably don't need to do this since seq scan wants this format
-        x = rearrange(x, "b d l -> b l d")
 
         A = -torch.exp(A_log.float())
         D = D.float()
 
-        x_dbl = F.linear(x, x_proj_w)
+        x_dbl = torch.einsum("bdl,md->bml", x_conv_out, x_proj_w)
 
         n = A.shape[1]
         dt_rank = dt_proj_w.shape[1]
-        (delta, B, C) = x_dbl.split(split_size=[dt_rank, n, n], dim=-1)
+        (delta, B, C) = x_dbl.split(split_size=[dt_rank, n, n], dim=1)
 
-        delta_act = F.linear(delta, dt_proj_w, dt_proj_b)
+        delta_act = (
+            torch.einsum("brl,nr->bnl", delta, dt_proj_w) + dt_proj_b[None, :, None]
+        )
 
         scan_out = parallel_scan_fwd(
             A,
-            delta_act.mT.contiguous(),
-            B.mT.contiguous(),
-            C.mT.contiguous(),
-            x.mT.contiguous(),
+            delta_act.contiguous(),
+            B.contiguous(),
+            C.contiguous(),
+            x_conv_out.contiguous(),
         )
         y = scan_out.mT.contiguous()
 
-        y = y + x * D
+        y = y + x_conv_out.mT * D
 
         y_f = y * F.silu(res)
 
@@ -146,42 +144,39 @@ class MambaInnerFn(Function):
 
         dy = grad_output @ out_proj_w
 
-        dres = dy * y * (res.sigmoid() + (res * res.sigmoid() * (1 - res.sigmoid())))
+        dres = dy * y * silu_bwd(res)
 
-        dout_proj_w = torch.sum(grad_output.mT @ y_f.to(x.dtype), dim=0)
+        dout_proj_w = torch.sum(grad_output.mT @ y_f.to(x_conv_out.dtype), dim=0)
 
         dy = dy * F.silu(res)
 
-        dD = torch.sum(dy * x, dim=(0, 1))
+        dD = torch.sum(dy * x_conv_out.mT, dim=(0, 1))
 
-        dx = dy * D
+        dx_conv_out = dy * D
 
         A_grad, B_grad, C_grad, delta_grad, x_grad = parallel_scan_bwd(
             A,
-            delta_act.mT.contiguous(),
-            B.mT.contiguous(),
-            C.mT.contiguous(),
-            x.mT.contiguous(),
+            delta_act.contiguous(),
+            B.contiguous(),
+            C.contiguous(),
+            x_conv_out.contiguous(),
             dy,
         )
 
         dA_log = A_grad * A
 
-        ddt_proj_w = torch.sum(delta_grad @ delta, dim=0)
-        ddt_proj_b = torch.sum(delta_grad, dim=(0, -1))
+        ddt_proj_w = torch.einsum("bdl,brl->dr", delta_grad, delta)
+        ddt_proj_b = torch.einsum("bdl->d", delta_grad)
+        ddelta = torch.einsum("bdl,dr->brl", delta_grad, dt_proj_w)
 
-        ddelta = delta_grad.mT @ dt_proj_w
+        xdbl_act_grad = torch.cat([ddelta, B_grad, C_grad], dim=1)
+        dx_proj_w = torch.einsum("bml,bdl->md", xdbl_act_grad, x_conv_out)
+        dx_proj_act = torch.einsum("bml,md->bdl", xdbl_act_grad, x_proj_w)
 
-        xdbl_act_grad = torch.cat([ddelta, B_grad.mT, C_grad.mT], dim=-1)
-
-        dx_proj_w = torch.sum(xdbl_act_grad.mT @ x, dim=0)
-
-        dx_proj_act = xdbl_act_grad @ x_proj_w
-
-        x_grad = dx.mT.contiguous() + x_grad + dx_proj_act.mT.contiguous()
+        x_grad = dx_conv_out.mT + x_grad + dx_proj_act
 
         dx_pre_conv, dconv1d_w, dconv1d_b = causal_conv1d_fn_bwd(
-            x_pre_conv, conv1d_w, conv1d_b, x_grad, act=1
+            x.mT.contiguous(), conv1d_w, conv1d_b, x_grad.contiguous(), act=1
         )
 
         dx = torch.cat([dx_pre_conv.mT.contiguous(), dres], dim=-1)
@@ -203,7 +198,6 @@ class MambaInnerFn(Function):
 
 
 if __name__ == "__main__":
-
     from mamba.mamba import MambaBlock, MambaConfig
 
     hidden = 128
@@ -225,11 +219,9 @@ if __name__ == "__main__":
     torch.nn.init.ones_(block.conv1d.bias)
 
     with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-
         reference_out, _ = block(activation, None)
 
     with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-
         ckpt_out = MambaInnerFn.apply(
             activation,
             block.in_proj.weight,
