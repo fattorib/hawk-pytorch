@@ -142,6 +142,8 @@ class MambaBlock(nn.Module):
             C.mT.contiguous(),
             x.mT.contiguous(),
         )
+
+        assert scan_out is not None
         y = scan_out.mT.contiguous()
 
         y = y + x * D
@@ -176,7 +178,7 @@ class MambaBlock(nn.Module):
             self.dt_proj.bias,
             self.out_proj.weight,
         )
-        return output, cache
+        return output, cache  # type: ignore
 
 
 class RNNLayer(nn.Module):

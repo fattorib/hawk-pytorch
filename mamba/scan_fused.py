@@ -14,7 +14,9 @@ def rol(a1, b1_last, b1_cur, a2, b2_last, b2_cur):
 
 @triton.jit
 def roll(y, dim, rev=0):
-    _, rh2, _ = tl.associative_scan((1 + 0 * y, 0.0 * y, y), dim, rol, reverse=rev)
+    _, rh2, _ = tl.associative_scan(
+        (1 + 0 * y, 0.0 * y, y), dim, rol, reverse=bool(rev)
+    )
     return rh2
 
 
@@ -52,7 +54,7 @@ def parallel_scan_fwd_kernel(
     BLOCKSIZE_L: tl.constexpr,
     N: tl.constexpr,
 ):
-    ln_2: tl.constexpr = 1.44269504
+    ln_2: tl.constexpr = 1.44269504  # type: ignore
 
     # parallelize over (batch, channel) dimension
     b_pid = tl.program_id(0)
@@ -131,8 +133,8 @@ def parallel_scan_fwd(
         B.stride(0),B.stride(1),
         x.stride(0),x.stride(1),
         BLOCKSIZE_L,N,
-        enable_fp_fusion = True, 
-        num_warps = num_warps
+        enable_fp_fusion = True, # type: ignore
+        num_warps = num_warps # type: ignore
     )
     # fmt: on
 
@@ -156,7 +158,7 @@ def parallel_scan_bwd_kernel(
 ):
 # fmt: on
 
-    ln_2: tl.constexpr = 1.44269504
+    ln_2: tl.constexpr = 1.44269504 #type: ignore
 
     # parallelize over (batch, channel) dimension
     b_pid = tl.program_id(0)
@@ -250,7 +252,7 @@ def parallel_scan_bwd_kernel(
     tl.store(ddelta_ptr + l_offs, value= ddelta.to(tl.bfloat16))
     tl.store(dx_ptr + l_offs, value= dX.to(tl.bfloat16))
 
-def parallel_scan_bwd(A, delta, B, C, x, grad_output) -> torch.Tensor:
+def parallel_scan_bwd(A, delta, B, C, x, grad_output) -> Tuple[torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor]:
 
     n = A.shape[1]
     b, d, l = x.shape
@@ -288,8 +290,8 @@ def parallel_scan_bwd(A, delta, B, C, x, grad_output) -> torch.Tensor:
         B_grad.stride(0),B_grad.stride(1),B_grad.stride(2), 
         x.stride(0), x.stride(1),
         BLOCKSIZE_L,N,
-        enable_fp_fusion = True,
-        num_warps = num_warps
+        enable_fp_fusion = True, # type: ignore
+        num_warps = num_warps # type: ignore
     )
 
     return A_batch_grad.sum(dim=0).to(A.dtype), B_grad.sum(dim = 1), C_grad.sum(dim = 1), delta_grad, x_grad
@@ -314,7 +316,7 @@ class MambaRecurrence(Function):
 
     @staticmethod
     @torch.amp.custom_bwd(device_type="cuda")  # type: ignore
-    def backward(ctx, grad_output) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:  # type: ignore
+    def backward(ctx, grad_output) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:  # type: ignore
         (A, delta, B, C, x) = ctx.saved_tensors
 
         A_batch_grad, B_grad, C_grad, delta_grad, x_grad = parallel_scan_bwd(A, delta, B, C, x, grad_output)

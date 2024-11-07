@@ -210,8 +210,8 @@ def causal_conv1d_fn_fwd(x, weight, bias=None, act: int = 1):
         seqlen,
         kernel_t,
         act=act,
-        enable_fp_fusion=True,
-        num_warps=warps,
+        enable_fp_fusion=True,  # type: ignore
+        num_warps=warps,  # type: ignore
     )
 
     return y
@@ -283,8 +283,8 @@ def causal_conv1d_fn_bwd(x, weight, bias, grad_out, act):
         seqlen,
         kernel_t,
         act=act,
-        enable_fp_fusion=True,
-        num_warps=warps,
+        enable_fp_fusion=True,  # type: ignore
+        num_warps=warps,  # type: ignore
     )
     return x_grad, weight_grad.sum(dim=0).unsqueeze(1), bias_grad.sum(dim=0)
 
@@ -300,7 +300,7 @@ class CausalConv(Function):
 
     @staticmethod
     @torch.amp.custom_bwd(device_type="cuda")  # type: ignore
-    def backward(ctx, grad_output):
+    def backward(ctx, grad_output):  # type: ignore
         (x, weight, bias) = ctx.saved_tensors
 
         x_grad, weight_grad, bias_grad = causal_conv1d_fn_bwd(
@@ -310,62 +310,60 @@ class CausalConv(Function):
         return x_grad, weight_grad, bias_grad, None
 
 
-def causal_conv(
-    x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor, act: int
-) -> torch.Tensor:
+def causal_conv(x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor, act: int):
     return CausalConv.apply(x, weight, bias, act)
 
 
-if __name__ == "__main__":
-    b = 4
-    d = 128
-    l = 4096
-    width = 4
+# if __name__ == "__main__":
+#     b = 4
+#     d = 128
+#     l = 4096
+#     width = 4
 
-    temporal_width = 4
-    conv1d = torch.nn.Conv1d(
-        in_channels=d,
-        out_channels=d,
-        bias=True,
-        kernel_size=width,
-        groups=d,
-        padding=width - 1,
-    )
-    conv1d.cuda()
+#     temporal_width = 4
+#     conv1d = torch.nn.Conv1d(
+#         in_channels=d,
+#         out_channels=d,
+#         bias=True,
+#         kernel_size=width,
+#         groups=d,
+#         padding=width - 1,
+#     )
+#     conv1d.cuda()
 
-    x = torch.randn((b, d, l), device="cuda", dtype=torch.float32, requires_grad=True)
+#     x = torch.randn((b, d, l), device="cuda", dtype=torch.float32, requires_grad=True)
 
-    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-        out_ref = F.silu(conv1d(x))[..., :l]
+#     with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+#         out_ref = F.silu(conv1d(x))[..., :l]
 
-    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-        out_tl = causal_conv(x, conv1d.weight, conv1d.bias, act=1)
-        # out_tl = causal_conv1d_fn_fwd(x, conv1d.weight, conv1d.bias, act=1)
-    dy = torch.ones_like(out_ref)
+#     with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+#         out_tl = causal_conv(x, conv1d.weight, conv1d.bias, act=1)
+#         # out_tl = causal_conv1d_fn_fwd(x, conv1d.weight, conv1d.bias, act=1)
+#     dy = torch.ones_like(out_ref)
 
-    print(torch.linalg.norm(out_ref - out_tl) / torch.linalg.norm(out_ref))
+#     print(torch.linalg.norm(out_ref - out_tl) / torch.linalg.norm(out_ref))
 
-    # # Backward pass - PyTorch
-    out_ref.backward(dy, retain_graph=True)
-    dx_torch = x.grad.clone()
-    dw_torch = conv1d.weight.grad.clone()
-    db_torch = conv1d.bias.grad.clone()
+#     # # Backward pass - PyTorch
+#     out_ref.backward(dy, retain_graph=True)
+#     dx_torch = x.grad.clone()
+#     dw_torch = conv1d.weight.grad.clone()
+#     db_torch = conv1d.bias.grad.clone()
 
-    # Reset grads for manual implementation
-    x.grad = None
-    conv1d.weight.grad = None
-    conv1d.bias.grad = None
+#     # Reset grads for manual implementation
+#     x.grad = None
+#     conv1d.weight.grad = None
+#     conv1d.bias.grad = None
 
-    # Backward pass - Manual implementation
-    out_tl.backward(dy, retain_graph=True)
+#     # Backward pass - Manual implementation
+#     out_tl.backward(dy, retain_graph=True)
 
-    def relative_error(x: torch.Tensor, y: torch.Tensor) -> float:
-        return (torch.linalg.norm(x - y) / torch.linalg.norm(y)).item()
+#     def relative_error(x: torch.Tensor, y: torch.Tensor) -> float:
+#         return (torch.linalg.norm(x - y) / torch.linalg.norm(y)).item()
 
-    dx_manual = x.grad.clone()
-    dw_manual = conv1d.weight.grad.clone()
-    db_manual = conv1d.bias.grad.clone()
+#     dx_manual = x.grad.clone()
+#     dw_manual = conv1d.weight.grad.clone()
+#     db_manual = conv1d.bias.grad.clone()
 
-    print(f"dx: {relative_error(dx_manual, dx_torch)}")
-    print(f"dW: {relative_error(dw_manual, dw_torch)}")
-    print(f"db: {relative_error(db_manual, db_torch)}")
+#     print(f"dx: {relative_error(dx_manual, dx_torch)}")
+#     print(f"dW: {relative_error(dw_manual, dw_torch)}")
+#     print(f"db: {relative_error(db_manual, db_torch)}")
