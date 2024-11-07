@@ -52,7 +52,6 @@ def parallel_scan_fwd_kernel(
     BLOCKSIZE_L: tl.constexpr,
     N: tl.constexpr,
 ):
-
     ln_2: tl.constexpr = 1.44269504
 
     # parallelize over (batch, channel) dimension
@@ -80,7 +79,6 @@ def parallel_scan_fwd_kernel(
     )
 
     for chan_idx in range(N):
-
         B_ch = tl.load(B_ptr + chan_idx * B_n_stride + l_offs).to(tl.float32)
 
         C_ch = tl.load(C_ptr + chan_idx * B_n_stride + l_offs).to(tl.float32)
@@ -108,7 +106,6 @@ def parallel_scan_fwd(
     C: torch.Tensor,  # [b,n,l]
     x: torch.Tensor,  # [b,d,l]
 ) -> torch.Tensor:  # [b,d,l]
-
     n = A.shape[1]
     b, d, l = x.shape
 

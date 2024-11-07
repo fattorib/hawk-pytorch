@@ -10,7 +10,19 @@ import torch.nn.functional as F
 from einops import rearrange, repeat
 
 from .cache import RNNCache
+from .mamba_inner_fn import MambaInnerFn
 from .scan_fused import selective_scan
+
+
+def mamba_inner_fn(
+    x, conv1d_w, conv1d_b, A_log, D, x_proj_w, dt_proj_w, dt_proj_b, out_proj_w
+):
+
+    o = MambaInnerFn.apply(
+        x, conv1d_w, conv1d_b, A_log, D, x_proj_w, dt_proj_w, dt_proj_b, out_proj_w
+    )
+    return 0
+
 
 # ------
 # Config
@@ -153,23 +165,18 @@ class MambaBlock(nn.Module):
 
         x_and_res = self.in_proj(x)  # shape (b, l, 2 * d_in)
 
-        (x, res) = torch.chunk(x_and_res, chunks=2, dim=-1)
-
-        (b, l, d) = x.shape
-
-        x = rearrange(x, "b l d_in -> b d_in l")
-        x = F.silu(self.conv1d(x)[:, :, :l])
-        x = rearrange(x, "b d_in l -> b l d_in")
-
-        y = self._ssm(x)
-
-        # # TODO: Recompute this as a chunk
-        y = y * F.silu(res)
-
-        output = self.out_proj(y)
-
+        output = mamba_inner_fn(
+            x_and_res,
+            self.conv1d.weight,
+            self.conv1d.bias,
+            self.A_log,
+            self.D,
+            self.x_proj.weight,
+            self.dt_proj.weight,
+            self.dt_proj.bias,
+            self.out_proj.weight,
+        )
         return output, cache
-        # return x, cache
 
 
 class RNNLayer(nn.Module):

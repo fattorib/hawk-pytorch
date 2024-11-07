@@ -1,5 +1,3 @@
-from typing import Tuple
-
 import torch
 import torch.nn.functional as F
 from torch.autograd import Function
@@ -17,8 +15,7 @@ class MambaInnerFn(Function):
     @torch.amp.custom_fwd(device_type="cuda", cast_inputs=torch.bfloat16)  # type: ignore
     def forward(
         ctx,
-        x,
-        in_proj_w,
+        x_and_res,
         conv1d_w,
         conv1d_b,
         A_log,
@@ -29,8 +26,7 @@ class MambaInnerFn(Function):
         out_proj_w,
     ):
         ctx.save_for_backward(
-            x,
-            in_proj_w,
+            x_and_res,
             conv1d_w,
             conv1d_b,
             A_log,
@@ -41,7 +37,7 @@ class MambaInnerFn(Function):
             out_proj_w,
         )
 
-        x_and_res = F.linear(x, in_proj_w)
+        # x_and_res = F.linear(x, in_proj_w)
 
         (x, res) = torch.chunk(x_and_res, chunks=2, dim=-1)
 
@@ -91,15 +87,13 @@ class MambaInnerFn(Function):
             out_proj_w,
         ) = ctx.saved_tensors
 
-        din_proj_w = torch.empty_like(in_proj_w)
-        # dx = torch.empty_like(x_and_res)
-        dconv1d_w = torch.empty_like(conv1d_w)
-        dconv1d_b = torch.empty_like(conv1d_b)
-        dA_log = torch.empty_like(A_log)
-        dD = torch.empty_like(D)
-        dx_proj_w = torch.empty_like(x_proj_w)
-        ddt_proj_w = torch.empty_like(dt_proj_w)
-        ddt_proj_b = torch.empty_like(dt_proj_b)
+        # dconv1d_w = torch.empty_like(conv1d_w)
+        # dconv1d_b = torch.empty_like(conv1d_b)
+        # dA_log = torch.empty_like(A_log)
+        # dD = torch.empty_like(D)
+        # dx_proj_w = torch.empty_like(x_proj_w)
+        # ddt_proj_w = torch.empty_like(dt_proj_w)
+        # ddt_proj_b = torch.empty_like(dt_proj_b)
 
         # -------------------
         # Re-run forward pass
@@ -109,8 +103,6 @@ class MambaInnerFn(Function):
         (x, res) = torch.chunk(x_and_res, chunks=2, dim=-1)
 
         x_conv_out = causal_conv1d_fn_fwd(x.mT.contiguous(), conv1d_w, conv1d_b, act=1)
-
-        # TODO: we probably don't need to do this since seq scan wants this format
 
         A = -torch.exp(A_log.float())
         D = D.float()
@@ -181,11 +173,8 @@ class MambaInnerFn(Function):
 
         dx = torch.cat([dx_pre_conv.mT.contiguous(), dres], dim=-1)
 
-        dx = dx.to(x.dtype) @ in_proj_w
-
         return (
             dx,
-            din_proj_w,
             dconv1d_w,
             dconv1d_b,
             dA_log,

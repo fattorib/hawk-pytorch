@@ -42,7 +42,6 @@ def causal_conv_forward_kernel(
     y = tl.zeros([seqlen], dtype=tl.float32)
 
     for t in range(0, kernel_t):
-
         # Succesively load x in shifts
 
         w_load = (kernel_t - 1) - t
@@ -146,7 +145,6 @@ def causal_conv_backward_kernel(
     dw_ptr += b_pid * dw_stride_b + d_pid * dw_stride_d
 
     for t in range(0, kernel_t):
-
         offs_t = t + tl.arange(0, seqlen)
 
         # NOTE: Not vectorized since these are loads from global
@@ -188,7 +186,7 @@ def causal_conv1d_fn_fwd(x, weight, bias=None, act: int = 1):
     if not x.is_contiguous():
         x = x.contiguous()
 
-    match (seqlen):
+    match seqlen:
         case _ if (seqlen) <= 2048:
             warps = 1
 
@@ -252,7 +250,7 @@ def causal_conv1d_fn_bwd(x, weight, bias, grad_out, act):
         device=weight.device,
     )
 
-    match (seqlen):
+    match seqlen:
         case _ if (seqlen) <= 2048:
             warps = 1
 
@@ -295,7 +293,6 @@ class CausalConv(Function):
     @staticmethod
     @torch.amp.custom_fwd(device_type="cuda", cast_inputs=torch.bfloat16)  # type: ignore
     def forward(ctx, x, weight, bias, act):
-
         ctx.save_for_backward(x, weight, bias)
         ctx.act = act
 
@@ -320,7 +317,6 @@ def causal_conv(
 
 
 if __name__ == "__main__":
-
     b = 4
     d = 128
     l = 4096
