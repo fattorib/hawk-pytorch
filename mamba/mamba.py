@@ -7,9 +7,10 @@ from typing import List, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from einops import rearrange, repeat
+from einops import repeat
 
 from .cache import RNNCache
+from .causal_conv1d import causal_conv
 from .mamba_inner_fn import MambaInnerFn
 from .scan_fused import selective_scan
 
@@ -21,7 +22,7 @@ def mamba_inner_fn(
     o = MambaInnerFn.apply(
         x, conv1d_w, conv1d_b, A_log, D, x_proj_w, dt_proj_w, dt_proj_b, out_proj_w
     )
-    return 0
+    return o
 
 
 # ------
@@ -34,9 +35,10 @@ class MambaConfig:
     vocab_size: int
     hidden_size: int
     intermediate_size: int
-    state_size: int  # this is the expansion factor
+    state_size: int
     num_hidden_layers: int
     dt_rank: int
+    checkpoint: bool = True
 
 
 # -------
@@ -123,7 +125,10 @@ class MambaBlock(nn.Module):
 
         self.scan_fn = selective_scan
 
-    def _ssm(self, x):
+    def _ssm(
+        self,
+        x,
+    ):
         n = self.A_log.shape[1]
 
         A = -torch.exp(self.A_log.float())
@@ -135,7 +140,7 @@ class MambaBlock(nn.Module):
 
         delta = self.dt_proj(delta)
 
-        scan_out = self.scan_fn(
+        scan_out = selective_scan(
             A,
             delta.mT.contiguous(),
             B.mT.contiguous(),
@@ -153,7 +158,7 @@ class MambaBlock(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        layer_past: RNNCache,
+        layer_past: RNNCache | None = None,
     ) -> Tuple[torch.Tensor, Union[RNNCache, None]]:
         has_layer_past = (
             layer_past is not None
@@ -167,18 +172,38 @@ class MambaBlock(nn.Module):
 
         x_and_res = self.in_proj(x)  # shape (b, l, 2 * d_in)
 
-        output = mamba_inner_fn(
-            x_and_res,
-            self.conv1d.weight,
-            self.conv1d.bias,
-            self.A_log,
-            self.D,
-            self.x_proj.weight,
-            self.dt_proj.weight,
-            self.dt_proj.bias,
-            self.out_proj.weight,
-        )
-        return output, cache  # type: ignore
+        if self.config.checkpoint:
+
+            output = mamba_inner_fn(
+                x_and_res,
+                self.conv1d.weight,
+                self.conv1d.bias,
+                self.A_log,
+                self.D,
+                self.x_proj.weight,
+                self.dt_proj.weight,
+                self.dt_proj.bias,
+                self.out_proj.weight,
+            )
+            return output, cache  # type: ignore
+
+        else:
+
+            (x, res) = torch.chunk(x_and_res, chunks=2, dim=-1)
+
+            x = causal_conv(
+                x.mT.contiguous(), self.conv1d.weight, self.conv1d.bias, act=1  # type: ignore
+            )
+            assert isinstance(x, torch.Tensor)
+            x = x.mT.contiguous()
+
+            y = self._ssm(x)
+
+            y = y * F.silu(res)
+
+            output = self.out_proj(y)
+
+            return output, cache
 
 
 class RNNLayer(nn.Module):

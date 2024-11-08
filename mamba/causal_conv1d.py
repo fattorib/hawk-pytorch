@@ -230,6 +230,12 @@ def causal_conv1d_fn_bwd(x, weight, bias, grad_out, act):
     dbias: (dim,)
     """
 
+    if not grad_out.is_contiguous():
+        grad_out = grad_out.contiguous()
+
+    assert grad_out.is_contiguous()
+    assert x.is_contiguous()
+
     b = x.shape[0]
     d = x.shape[1]
 
@@ -331,16 +337,22 @@ def causal_conv(x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor, act: 
 #     )
 #     conv1d.cuda()
 
-#     x = torch.randn((b, d, l), device="cuda", dtype=torch.float32, requires_grad=True)
+#     from einops import rearrange
+
+#     x = torch.randn((b, l, d), device="cuda", dtype=torch.float32, requires_grad=True)
 
 #     with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-#         out_ref = F.silu(conv1d(x))[..., :l]
+#         x_ref = rearrange(x, "b l d_in -> b d_in l")
+#         out_ref = F.silu(conv1d(x_ref))[..., :l]
+#         out_ref = rearrange(out_ref, "b d_in l -> b l d_in")
 
 #     with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-#         out_tl = causal_conv(x, conv1d.weight, conv1d.bias, act=1)
-#         # out_tl = causal_conv1d_fn_fwd(x, conv1d.weight, conv1d.bias, act=1)
+#         out_tl = causal_conv(x.mT.contiguous(), conv1d.weight, conv1d.bias, act=1)
+#         out_tl = out_tl.mT.contiguous()
+
 #     dy = torch.ones_like(out_ref)
 
+#     print(out_tl.shape, out_ref.shape)
 #     print(torch.linalg.norm(out_ref - out_tl) / torch.linalg.norm(out_ref))
 
 #     # # Backward pass - PyTorch

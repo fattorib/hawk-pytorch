@@ -21,7 +21,7 @@ jobs:
 
       - name: Run Pyright
         run: |
-          python -m pyright hawk
+          python -m pyright mamba
 
   linting:
     name: Linting
@@ -41,5 +41,5 @@ jobs:
 
       - name: Run Black + isort
         run: |
-          python -m black --check hawk
-          python -m isort --check --profile black hawk
+          python -m black --check mamba
+          python -m isort --check --profile black mamba
