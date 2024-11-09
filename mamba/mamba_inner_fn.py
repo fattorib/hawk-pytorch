@@ -127,7 +127,7 @@ class MambaInnerFn(Function):
 
         dy = grad_output @ out_proj_w
 
-        dres = dy * y * silu_bwd(res)
+        dres = dy * y * silu_bwd(res.float())
 
         dout_proj_w = torch.sum(grad_output.mT @ y_f.to(x_conv_out.dtype), dim=0)
 
