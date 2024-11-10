@@ -162,7 +162,7 @@ class MambaInnerFn(Function):
             x.mT.contiguous(), conv1d_w, conv1d_b, x_grad.contiguous(), act=1
         )
 
-        dx = torch.cat([dx_pre_conv.mT.contiguous(), dres], dim=-1)
+        dx = torch.cat([dx_pre_conv.mT.contiguous(), dres], dim=-1) #TODO: This is pretty slow, probably better to fuse with bwd on cc
 
         return (
             dx,
