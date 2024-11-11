@@ -73,6 +73,7 @@ class CrossEntropyLoopedFused(Function):
         return grad_output * weight_grad, grad_output * act_grad, None
 
 
+# torch.compile does a good enough job with the kernel here
 @torch.compile
 def fused_cross_entropy(lm_head_weight, act, labels):
     return CrossEntropyLoopedFused.apply(lm_head_weight, act, labels)
