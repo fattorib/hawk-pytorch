@@ -11,6 +11,7 @@ from einops import repeat
 
 from .cache import RNNCache
 from .causal_conv1d import causal_conv
+from .fused_cross_entropy import fused_cross_entropy
 from .mamba_inner_fn import MambaInnerFn
 from .scan_fused import selective_scan
 
@@ -289,20 +290,18 @@ class MambaModel(nn.Module):
 
         hidden_states = self.norm(hidden_states)
 
-        logits = self.lm_head(hidden_states)
-
         if self.use_cache:
+            logits = self.lm_head(hidden_states)
             return logits, rnn_rnn_cache_list
 
         else:
             if labels is not None:
-                shift_logits = logits[..., :-1, :].contiguous()
 
                 shift_labels = labels[..., 1:].contiguous()
-
-                loss_fct = torch.nn.CrossEntropyLoss()
-                loss = loss_fct(
-                    shift_logits.view(-1, shift_logits.size(-1)),
+                shift_x = hidden_states[..., :-1, :].contiguous()
+                loss = fused_cross_entropy(
+                    self.lm_head.weight,
+                    shift_x.view(-1, shift_x.size(-1)),
                     shift_labels.view(-1),
                 )
                 return loss
