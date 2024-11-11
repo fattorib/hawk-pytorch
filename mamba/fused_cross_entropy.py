@@ -64,7 +64,7 @@ class CrossEntropyLoopedFused(Function):
         return scale * out_loss
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx, grad_output):  # type: ignore
 
         (
             weight_grad,
