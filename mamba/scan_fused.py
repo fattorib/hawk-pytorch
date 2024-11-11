@@ -178,7 +178,8 @@ def parallel_scan_bwd_kernel(
     x = tl.load(x_ptr + l_offs).to(tl.float32)  # [L]
     delta = softplus_fwd(tl.load(delta_ptr + l_offs).to(tl.float32))  # [L]
 
-    delta_shifted = softplus_fwd(tl.load(delta_ptr + 1 + l_offs, mask = l_offs < BLOCKSIZE_L, other=1.0).to(tl.float32))
+    l_offs_1 = l_offs + 1
+    delta_shifted = softplus_fwd(tl.load(delta_ptr + l_offs_1, mask = l_offs_1 < BLOCKSIZE_L, other=1.0).to(tl.float32))
 
     A_ptr += A_row_stride * d_pid
 
