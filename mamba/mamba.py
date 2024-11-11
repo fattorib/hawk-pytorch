@@ -305,4 +305,6 @@ class MambaModel(nn.Module):
                     shift_labels.view(-1),
                 )
                 return loss
+
+            logits = self.lm_head(hidden_states)
             return logits
