@@ -3,11 +3,7 @@ import torch.nn.functional as F
 from torch.autograd import Function
 
 from .causal_conv1d import causal_conv1d_fn_bwd, causal_conv1d_fn_fwd
-
-# from .scan_fused import parallel_scan_bwd, parallel_scan_fwd
 from .scan_fused import parallel_scan_bwd, parallel_scan_fwd
-
-# from .scan_fused_old import parallel_scan_backward as parallel_scan_bwd
 
 
 def silu_bwd(x):
@@ -29,6 +25,15 @@ class MambaInnerFn(Function):
         dt_proj_b,
         out_proj_w,
     ):
+        print(x_and_res.shape)
+        print(
+            conv1d_w.shape,
+            conv1d_b.shape,
+            x_proj_w.shape,
+            dt_proj_w.shape,
+            dt_proj_b.shape,
+            out_proj_w.shape,
+        )
         ctx.save_for_backward(
             x_and_res,
             conv1d_w,
