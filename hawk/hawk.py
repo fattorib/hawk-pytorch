@@ -26,7 +26,7 @@ class HawkConfig:
     num_hidden_layers: int
     recurrent_size: int
     num_blocks: int
-    post_norm: bool = False
+    conv_width: int
 
 
 # ----
@@ -96,11 +96,6 @@ class Hawk(nn.Module):
             config.hidden_size, 2 * config.recurrent_size, bias=False
         )
 
-        if config.post_norm:
-            self.norm = RMSNorm(config.recurrent_size)
-        else:
-            self.norm = nn.Identity()
-
         self.rg_lru_input_gate = BlockDiagonalLinear(
             width=config.recurrent_size, num_blocks=self.config.num_blocks
         )
@@ -119,10 +114,9 @@ class Hawk(nn.Module):
 
         self.use_cache = use_cache
 
-        self.temporal_width = 4
         self.conv1d = Conv1D(
             width=config.recurrent_size,
-            temporal_width=self.temporal_width,
+            temporal_width=self.config.conv_width,
         )
 
         self.reset_parameters()
@@ -138,7 +132,7 @@ class Hawk(nn.Module):
         return rnn_param_init(w, min_rad=0.9, max_rad=0.999)
 
     def epilogue(self, gate, h):
-        return self.resid_proj(F.gelu(gate) * self.norm(h))
+        return self.resid_proj(F.gelu(gate) * h)
 
     def inference_prologue(self, x):
         # inference-only prologue function
