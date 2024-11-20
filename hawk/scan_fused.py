@@ -337,7 +337,16 @@ def sequential_scan_forward(
     grid = (b,num_blocks)
 
     warps = 1
+    if not x.is_contiguous():
+        x = x.contiguous()
+    if not x_rg_lru.is_contiguous():
+        x_rg_lru = x_rg_lru.contiguous()
+    if not a_rg_lru.is_contiguous():
+        a_rg_lru = a_rg_lru.contiguous()
 
+    assert x.is_contiguous()
+    assert x_rg_lru.is_contiguous()
+    assert a_rg_lru.is_contiguous()
     #fmt: off
     sequential_scan_fwd_kernel[grid](
         x,x_rg_lru,a_rg_lru, a_param,
@@ -381,6 +390,13 @@ def sequential_scan_backward(
     warps = 1
 
     # semi-cryptic errors if tensors not contiguous
+    if not x_saved.is_contiguous():
+        x_saved = x_saved.contiguous()
+    if not x_rg_lru_saved.is_contiguous():
+        x_rg_lru_saved = x_rg_lru_saved.contiguous()
+    if not a_rg_lru_saved.is_contiguous():
+        a_rg_lru_saved = a_rg_lru_saved.contiguous()
+        
     assert x_saved.is_contiguous()
     assert x_rg_lru_saved.is_contiguous()
     assert a_rg_lru_saved.is_contiguous()
