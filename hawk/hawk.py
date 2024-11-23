@@ -76,7 +76,7 @@ class MLP(nn.Module):
 
     def reset_parameters(self):
         lecun_init(self.gate_up_proj.weight, self.hidden_size)
-        lecun_init(self.resid_proj.weight, self.intermediate_size)
+        torch.nn.init.zeros_(self.resid_proj.weight) 
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.gate_up_proj(x)
@@ -125,7 +125,7 @@ class Hawk(nn.Module):
         self.forget_init(self.rg_lru_a_param)
 
         lecun_init(self.input_xy.weight, self.config.hidden_size)
-        lecun_init(self.resid_proj.weight, self.config.recurrent_size)
+        torch.nn.init.zeros_(self.resid_proj.weight) 
 
     def forget_init(self, w: torch.Tensor) -> torch.Tensor:
         """Initializes the `A` parameter of the RG-LRU."""
@@ -253,10 +253,9 @@ class HawkModel(nn.Module):
 
         self.reset_parameters()
 
-        self.lm_head.weight = self.embed_tokens.weight
-
     def reset_parameters(self):
         lecun_init(self.embed_tokens.weight, self.config.hidden_size)
+        torch.nn.init.zeros_(self.lm_head.weight) 
 
     def forward(
         self,
